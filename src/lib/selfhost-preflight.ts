@@ -34,6 +34,15 @@ function get(env: EnvRecord, name: string): string | undefined {
 
 function checkAuthMode(env: EnvRecord, items: PreflightItem[]): void {
   const rawMode = get(env, "AUTH_MODE");
+  const serviceIdentityKeys = [
+    "ACCESS_SERVICE_TOKEN_COMMON_NAME",
+    "ACCESS_SERVICE_USER_ID",
+    "ACCESS_SERVICE_USER_EMAIL",
+    "ACCESS_SERVICE_ORGANIZATION_ID",
+  ];
+  const configuredServiceIdentityKeys = serviceIdentityKeys.filter((name) =>
+    get(env, name),
+  );
 
   if (rawMode && !(AUTH_MODES as readonly string[]).includes(rawMode)) {
     items.push({
@@ -48,6 +57,16 @@ function checkAuthMode(env: EnvRecord, items: PreflightItem[]): void {
   const mode = rawMode ?? "cloudflare_access";
 
   if (mode === "local_noauth") {
+    if (configuredServiceIdentityKeys.length > 0) {
+      items.push({
+        key: "auth",
+        name: "AUTH_MODE",
+        level: "fail",
+        message:
+          "Access service identities require AUTH_MODE=cloudflare_access; local_noauth is forbidden for an unattended integration deployment.",
+      });
+      return;
+    }
     items.push({
       key: "auth",
       name: "AUTH_MODE",
@@ -108,6 +127,20 @@ function checkAuthMode(env: EnvRecord, items: PreflightItem[]): void {
       name: "TEAM_DOMAIN",
       level: "fail",
       message: teamDomainResult.message,
+    });
+    return;
+  }
+
+  if (
+    configuredServiceIdentityKeys.length > 0 &&
+    configuredServiceIdentityKeys.length !== serviceIdentityKeys.length
+  ) {
+    const missing = serviceIdentityKeys.filter((name) => !get(env, name));
+    items.push({
+      key: "auth",
+      name: "Access service identity",
+      level: "fail",
+      message: `Configure all Access service identity values or none. Missing: ${missing.join(", ")}.`,
     });
     return;
   }

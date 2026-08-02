@@ -16,6 +16,10 @@ declare namespace Cloudflare {
     BYPASS_EMAIL_VERIFICATION?: string;
     TEAM_DOMAIN?: string;
     POLICY_AUD?: string;
+    ACCESS_SERVICE_TOKEN_COMMON_NAME?: string;
+    ACCESS_SERVICE_USER_ID?: string;
+    ACCESS_SERVICE_USER_EMAIL?: string;
+    ACCESS_SERVICE_ORGANIZATION_ID?: string;
     POSTHOG_PUBLIC_KEY?: string;
     POSTHOG_HOST?: string;
     BETTER_AUTH_SECRET?: string;

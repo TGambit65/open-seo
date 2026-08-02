@@ -1,6 +1,8 @@
 import { db } from "@/db";
 import { user } from "@/db/schema";
 import { ensureDelegatedOrganizationForUser } from "@/server/auth/delegated-organization";
+import { AuthRepository } from "@/server/auth/repositories/AuthRepository";
+import { slugify, toHex } from "@/server/auth/org-slug";
 import { eq } from "drizzle-orm";
 import type { EnsuredUserContext } from "./types";
 
@@ -68,6 +70,32 @@ export async function resolveDelegatedContext(
     // Delegated auth (Cloudflare Access / local) has no unverified state.
     emailVerified: true,
     organizationId,
+  };
+}
+
+/**
+ * Resolve a machine identity into an operator-provisioned, stable workspace.
+ * Unlike human Access identities this never derives the organization from a
+ * JWT subject, so rotating a service token cannot create or select a different
+ * tenant.
+ */
+export async function resolveFixedDelegatedContext(input: {
+  userId: string;
+  userEmail: string;
+  organizationId: string;
+}): Promise<EnsuredUserContext> {
+  const ensuredEmail = await ensureUserRecord(input.userId, input.userEmail);
+  await AuthRepository.upsertDelegatedOrganization({
+    id: input.organizationId,
+    name: "OpenSEO service workspace",
+    slug: `service-${slugify(input.organizationId)}-${toHex(input.organizationId)}`,
+  });
+
+  return {
+    userId: input.userId,
+    userEmail: ensuredEmail,
+    emailVerified: true,
+    organizationId: input.organizationId,
   };
 }
 

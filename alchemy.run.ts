@@ -263,6 +263,12 @@ const dataEnv = {
   // AUTH_MODE, DATABASE_PROVIDER, BETTER_AUTH_URL, TEAM_DOMAIN, and
   // POLICY_AUD are stage-dependent and set in the stack body below.
   DATAFORSEO_API_KEY: Config.redacted("DATAFORSEO_API_KEY"),
+  ACCESS_SERVICE_TOKEN_COMMON_NAME: optionalVar(
+    "ACCESS_SERVICE_TOKEN_COMMON_NAME",
+  ),
+  ACCESS_SERVICE_USER_ID: optionalVar("ACCESS_SERVICE_USER_ID"),
+  ACCESS_SERVICE_USER_EMAIL: optionalVar("ACCESS_SERVICE_USER_EMAIL"),
+  ACCESS_SERVICE_ORGANIZATION_ID: optionalVar("ACCESS_SERVICE_ORGANIZATION_ID"),
   BYPASS_EMAIL_VERIFICATION: optionalVar("BYPASS_EMAIL_VERIFICATION"),
   BETTER_AUTH_SECRET: optionalSecret("BETTER_AUTH_SECRET"),
   GOOGLE_CLIENT_ID: optionalVar("GOOGLE_CLIENT_ID"),
@@ -311,6 +317,49 @@ export default Alchemy.Stack(
     );
     const databaseProvider = yield* optionalVar("DATABASE_PROVIDER");
     const workersSubdomain = yield* readWorkersSubdomain({ required: false });
+    const serviceIdentity = {
+      commonName: yield* optionalVar("ACCESS_SERVICE_TOKEN_COMMON_NAME"),
+      userId: yield* optionalVar("ACCESS_SERVICE_USER_ID"),
+      userEmail: yield* optionalVar("ACCESS_SERVICE_USER_EMAIL"),
+      organizationId: yield* optionalVar("ACCESS_SERVICE_ORGANIZATION_ID"),
+    };
+    const serviceIdentityValues = Object.values(serviceIdentity);
+    const serviceIdentityConfigured = serviceIdentityValues.every(Boolean);
+    if (serviceIdentityValues.some(Boolean) && !serviceIdentityConfigured) {
+      return yield* Effect.die(
+        new Error(
+          "Configure all ACCESS_SERVICE_TOKEN_COMMON_NAME, ACCESS_SERVICE_USER_ID, ACCESS_SERVICE_USER_EMAIL, and ACCESS_SERVICE_ORGANIZATION_ID values or none.",
+        ),
+      );
+    }
+    const accessApplicationHostname = yield* optionalVar(
+      "ACCESS_APPLICATION_HOSTNAME",
+    );
+    if (serviceIdentityConfigured) {
+      const explicitTeamDomain = yield* optionalVar("TEAM_DOMAIN");
+      const explicitPolicyAud = yield* optionalVar("POLICY_AUD");
+      if (authMode !== "cloudflare_access") {
+        return yield* Effect.die(
+          new Error(
+            "An Access service identity requires AUTH_MODE=cloudflare_access.",
+          ),
+        );
+      }
+      if (!explicitTeamDomain || !explicitPolicyAud) {
+        return yield* Effect.die(
+          new Error(
+            "An Access service identity requires an explicitly managed TEAM_DOMAIN and POLICY_AUD for the service-token and human-admin Access policies.",
+          ),
+        );
+      }
+      if (!accessApplicationHostname) {
+        return yield* Effect.die(
+          new Error(
+            "Set ACCESS_APPLICATION_HOSTNAME to the Access-protected custom hostname. workers.dev is disabled for service integrations.",
+          ),
+        );
+      }
+    }
 
     // Auth needs an absolute BETTER_AUTH_URL. Prod sets it explicitly;
     // previews always derive it from the deterministic worker name — a wrong
@@ -356,8 +405,22 @@ export default Alchemy.Stack(
 
     const app = yield* Cloudflare.Worker("open-seo", {
       name: workerName(stage),
+      // Unattended integrations must have exactly one routable origin: the
+      // Access-protected custom hostname. This disables both workers.dev and
+      // its preview aliases so Cloudflare Access cannot be bypassed at the
+      // Worker origin.
+      ...(serviceIdentityConfigured
+        ? {
+            url: false,
+            subdomain: { enabled: false, previewsEnabled: false },
+          }
+        : {}),
       // Prod serves the real domains; the zone is inferred from the hostname.
-      domain: prod ? ["app.openseo.so", "www.app.openseo.so"] : undefined,
+      domain: serviceIdentityConfigured
+        ? [accessApplicationHostname]
+        : prod
+          ? ["app.openseo.so", "www.app.openseo.so"]
+          : undefined,
       // Prebuilt worker from `vite build` (@cloudflare/vite-plugin). The entry
       // exports the DO + WorkflowEntrypoint classes (re-exported by
       // src/server.ts), which `bundle: false` requires. Sibling chunks under
