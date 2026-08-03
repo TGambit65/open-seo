@@ -10,8 +10,8 @@ reviewed revision rather than tracking upstream automatically.
 - Reviewed upstream base: `9d19e439905a9a954ccdefe22d9270d7c389695d`
 - Integration fork: `TGambit65/open-seo`
 - Integration branch: `feat/brutal-technical-site-health`
-- Release tag: `brutal-integration-v0.1.1`
-- Reviewed integration code: `e151f16ef6d5e8333069b7cd093e2cfa6a1876ba`
+- Release tag: `brutal-integration-v0.1.2`
+- Reviewed integration code: `dda2ea60eb834686e172e29b0151f4afabc7cf9d`
 
 The upstream `LICENSE` file and copyright notice remain unchanged. OpenSEO is
 MIT licensed. A production promotion additionally requires a recorded review
@@ -54,6 +54,10 @@ The release exposes versioned, strict MCP results for:
 - `get_audit_performance` with mobile and desktop samples, medians, worst
   metrics, failures, provider versions, and actual provider cost; and
 - `delete_site_audit` for retention cleanup.
+
+All audit output objects reject unknown fields. The checked-in `tools/list`
+fixture also fails on added, removed, or renamed audit tools without depending
+on registration order, so a contract change cannot silently bypass review.
 
 Lighthouse defaults off for ordinary callers. The Brutal service identity must
 request exactly 50 pages and explicitly enable Lighthouse. Provider controls
