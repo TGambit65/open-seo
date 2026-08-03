@@ -282,7 +282,21 @@ export const getAuditPagesTool = {
         urlContains: args.urlContains ?? null,
       }),
     });
-    const pages = paginated.rows;
+    const pages = paginated.rows.map((page) => ({
+      id: page.id,
+      url: page.url,
+      statusCode: page.statusCode,
+      fetchClass: page.fetchClass,
+      redirectUrl: page.redirectUrl,
+      title: page.title,
+      metaDescription: page.metaDescription,
+      wordCount: page.wordCount,
+      isIndexable: page.isIndexable,
+      crawlDepth: page.crawlDepth,
+      inSitemap: page.inSitemap,
+      internalLinkCount: page.internalLinkCount,
+      responseTimeMs: page.responseTimeMs,
+    }));
     const text = [
       `Audit ${audit.id}: ${filtered.length} pages${paginated.pageInfo.hasMore ? ` (showing ${paginated.pageInfo.returned})` : ""}.`,
       ...pages

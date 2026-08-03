@@ -22,8 +22,13 @@ function canonicalUrlKeyWithoutTrailingSlash(url: string): string {
 }
 
 type LighthouseFetchResult = {
-  result: LighthouseResult;
+  result: LighthouseExecutionResult;
   payloadJson: string | null;
+};
+
+export type LighthouseExecutionResult = LighthouseResult & {
+  budgetExhausted?: true;
+  reused?: true;
 };
 
 async function fetchLighthouseResult(
@@ -36,10 +41,10 @@ async function fetchLighthouseResult(
   let lastError: Error | null = null;
   let chargedFailureCostUsd = 0;
   const dataforseo = createDataforseoClient(billingCustomer);
+  const spend = await AuditRepository.getProviderSpend(auditId);
 
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const spend = await AuditRepository.getProviderSpend(auditId);
       if (
         spend.auditUsd +
           chargedFailureCostUsd +
@@ -71,6 +76,7 @@ async function fetchLighthouseResult(
             providerVersion: AUDIT_PROVIDER_VERSION,
             lighthouseVersion: null,
             actualCostUsd: chargedFailureCostUsd,
+            budgetExhausted: true,
           },
           payloadJson: null,
         };
@@ -149,7 +155,36 @@ export async function fetchAndStoreLighthouseResult(input: {
   billingCustomer: BillingCustomerContext;
   projectId: string;
   auditId: string;
-}): Promise<LighthouseResult> {
+}): Promise<LighthouseExecutionResult> {
+  const existing =
+    await AuditRepository.getLighthouseResultForAuditPageStrategy({
+      auditId: input.auditId,
+      pageId: input.pageId,
+      strategy: input.strategy,
+    });
+  if (existing && !existing.errorMessage) {
+    return {
+      url: input.url,
+      pageId: input.pageId,
+      strategy: input.strategy,
+      performanceScore: existing.performanceScore,
+      accessibilityScore: existing.accessibilityScore,
+      bestPracticesScore: existing.bestPracticesScore,
+      seoScore: existing.seoScore,
+      lcpMs: existing.lcpMs,
+      cls: existing.cls,
+      inpMs: existing.inpMs,
+      ttfbMs: existing.ttfbMs,
+      errorMessage: existing.errorMessage,
+      r2Key: existing.r2Key,
+      payloadSizeBytes: existing.payloadSizeBytes,
+      providerVersion: existing.providerVersion,
+      lighthouseVersion: existing.lighthouseVersion,
+      actualCostUsd: existing.actualCostUsd,
+      reused: true,
+    };
+  }
+
   const fetched = await fetchLighthouseResult(
     input.url,
     input.pageId,

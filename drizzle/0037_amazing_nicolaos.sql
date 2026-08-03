@@ -13,6 +13,8 @@ ALTER TABLE `audit_lighthouse_results` ADD `provider_version` text DEFAULT 'open
 ALTER TABLE `audit_lighthouse_results` ADD `lighthouse_version` text;--> statement-breakpoint
 ALTER TABLE `audit_lighthouse_results` ADD `actual_cost_usd` real DEFAULT 0 NOT NULL;--> statement-breakpoint
 ALTER TABLE `audit_lighthouse_results` ADD `created_at` text DEFAULT (current_timestamp) NOT NULL;--> statement-breakpoint
+UPDATE `audit_lighthouse_results`
+SET `created_at` = strftime('%Y-%m-%dT%H:%M:%fZ', `created_at`);--> statement-breakpoint
 ALTER TABLE `audits` ADD `origin` text;--> statement-breakpoint
 ALTER TABLE `audits` ADD `idempotency_key` text;--> statement-breakpoint
 ALTER TABLE `audits` ADD `provider_version` text DEFAULT 'open-seo-audit-v1' NOT NULL;--> statement-breakpoint

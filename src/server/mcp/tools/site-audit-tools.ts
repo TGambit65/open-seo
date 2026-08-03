@@ -12,7 +12,6 @@ import {
   auditPath,
   resolveAudit,
 } from "@/server/mcp/tools/site-audit-tool-shared";
-import { AUDIT_PROVIDER_VERSION } from "@/shared/audit-provider";
 
 const runInputSchema = {
   projectId: projectIdSchema,
@@ -71,17 +70,20 @@ export const runSiteAuditTool = {
     );
     let auditId: string;
     let idempotent: boolean;
+    let providerVersion: string;
     try {
-      ({ auditId, idempotent } = await AuditService.startAudit({
-        actorUserId: context.auth.userId,
-        billingCustomer: context.billing,
-        projectId: args.projectId,
-        startUrl: args.url,
-        maxPages: args.maxPages,
-        lighthouseStrategy,
-        limitTier,
-        idempotencyKey: args.idempotencyKey,
-      }));
+      ({ auditId, idempotent, providerVersion } = await AuditService.startAudit(
+        {
+          actorUserId: context.auth.userId,
+          billingCustomer: context.billing,
+          projectId: args.projectId,
+          startUrl: args.url,
+          maxPages: args.maxPages,
+          lighthouseStrategy,
+          limitTier,
+          idempotencyKey: args.idempotencyKey,
+        },
+      ));
     } catch (error) {
       if (
         error instanceof AppError &&
@@ -122,7 +124,7 @@ export const runSiteAuditTool = {
       structuredContent: {
         auditId,
         idempotent,
-        providerVersion: AUDIT_PROVIDER_VERSION,
+        providerVersion,
       },
     });
   }),

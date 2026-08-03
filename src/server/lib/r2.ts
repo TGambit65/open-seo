@@ -27,5 +27,7 @@ export async function putTextToR2(
 
 export async function deleteFromR2(keys: string[]): Promise<void> {
   if (keys.length === 0) return;
-  await env.R2.delete(keys);
+  for (let index = 0; index < keys.length; index += 1_000) {
+    await env.R2.delete(keys.slice(index, index + 1_000));
+  }
 }

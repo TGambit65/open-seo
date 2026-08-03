@@ -64,10 +64,11 @@ export async function crawlPage(
   const startTime = Date.now();
 
   try {
+    const signal = AbortSignal.timeout(15_000);
     // Validate immediately before every outbound connection. The crawl queue
     // performs a cheap synchronous screen too, but this DNS-aware gate is what
     // rejects mixed/private answers and fails closed on resolver errors.
-    const validatedUrl = await validatePublicAuditUrl(url);
+    const validatedUrl = await validatePublicAuditUrl(url, signal);
     // Manual redirect handling: each hop is recorded as its own page row and
     // its target is enqueued by the frontier, so redirect chains and loops are
     // detectable from the recorded rows. Trailing-slash redirects (/docs ->
@@ -80,7 +81,7 @@ export async function crawlPage(
         Accept: "text/html,application/xhtml+xml",
       },
       redirect: "manual",
-      signal: AbortSignal.timeout(15_000),
+      signal,
     });
 
     const responseTimeMs = Date.now() - startTime;
@@ -98,9 +99,19 @@ export async function crawlPage(
         : null;
       // A redirect is never put onto the frontier until its DNS answers and
       // port have passed the same public-target policy as the start URL.
-      const redirectUrl = normalizedRedirect
-        ? await validatePublicAuditUrl(normalizedRedirect)
-        : null;
+      let redirectUrl: string | null = null;
+      if (normalizedRedirect) {
+        try {
+          redirectUrl = await validatePublicAuditUrl(
+            normalizedRedirect,
+            signal,
+          );
+        } catch {
+          // Preserve the source page's 3xx evidence while refusing to enqueue a
+          // redirect target that fails the public-network policy.
+          redirectUrl = null;
+        }
+      }
       return emptyPageResult({
         url,
         statusCode,

@@ -163,11 +163,17 @@ async function completeAudit(
 }
 
 async function failAudit(auditId: string, workflowInstanceId: string) {
+  const completedAt = new Date();
+  const rawDeleteAfter = new Date(
+    completedAt.getTime() +
+      BRUTAL_AUDIT_LIMITS.rawRetentionDays * 24 * 60 * 60 * 1_000,
+  ).toISOString();
   const updated = await db
     .update(audits)
     .set({
       status: "failed",
-      completedAt: new Date().toISOString(),
+      completedAt: completedAt.toISOString(),
+      rawDeleteAfter,
       currentPhase: "failed",
     })
     .where(

@@ -11,6 +11,7 @@ const repositoryMocks = vi.hoisted(() => ({
   findAuditByIdempotencyKey: vi.fn(),
   createAudit: vi.fn(),
   acquireDispatchLease: vi.fn(),
+  releaseDispatchLease: vi.fn(),
   markWorkflowStarted: vi.fn(),
   getAuditUsageForUser: vi.fn(),
   deleteAuditForProject: vi.fn(),
@@ -99,6 +100,7 @@ describe("AuditService.startAudit idempotency", () => {
       capacityUnits: 70,
     });
     repositoryMocks.deleteAuditForProject.mockResolvedValue(undefined);
+    repositoryMocks.releaseDispatchLease.mockResolvedValue(undefined);
   });
 
   it("returns the same audit and starts exactly one Workflow for duplicate calls", async () => {
@@ -112,6 +114,7 @@ describe("AuditService.startAudit idempotency", () => {
           ...data,
           status: "running",
           workflowStartedAt: null,
+          providerVersion: "persisted-v1",
           config: JSON.stringify(data.config),
         };
         return true;
@@ -127,6 +130,7 @@ describe("AuditService.startAudit idempotency", () => {
     expect(second.auditId).toBe(first.auditId);
     expect(first.idempotent).toBe(false);
     expect(second.idempotent).toBe(true);
+    expect(second.providerVersion).toBe("persisted-v1");
     expect(workflowMocks.create).toHaveBeenCalledTimes(1);
     expect(repositoryMocks.acquireDispatchLease).toHaveBeenCalledTimes(1);
   });
@@ -147,6 +151,33 @@ describe("AuditService.startAudit idempotency", () => {
     expect(repositoryMocks.deleteAuditForProject).not.toHaveBeenCalled();
   });
 
+  it("retains an idempotent row only when Workflow creation is genuinely ambiguous", async () => {
+    repositoryMocks.findAuditByIdempotencyKey.mockResolvedValue(undefined);
+    repositoryMocks.createAudit.mockResolvedValue(true);
+    workflowMocks.create.mockRejectedValue(new Error("response lost"));
+    workflowMocks.status.mockRejectedValue(new Error("status unavailable"));
+
+    await expect(AuditService.startAudit(startInput())).rejects.toMatchObject({
+      name: "AmbiguousWorkflowStartError",
+    });
+    expect(repositoryMocks.deleteAuditForProject).not.toHaveBeenCalled();
+    expect(repositoryMocks.releaseDispatchLease).not.toHaveBeenCalled();
+  });
+
+  it("releases a dispatch lease and rolls back non-ambiguous failures", async () => {
+    repositoryMocks.findAuditByIdempotencyKey.mockResolvedValue(undefined);
+    repositoryMocks.createAudit.mockResolvedValue(true);
+    repositoryMocks.acquireDispatchLease.mockRejectedValue(
+      new Error("lease database unavailable"),
+    );
+
+    await expect(AuditService.startAudit(startInput())).rejects.toThrow(
+      "lease database unavailable",
+    );
+    expect(repositoryMocks.releaseDispatchLease).toHaveBeenCalled();
+    expect(repositoryMocks.deleteAuditForProject).toHaveBeenCalled();
+  });
+
   it("rejects reuse of a key with different parameters", async () => {
     repositoryMocks.findAuditByIdempotencyKey.mockResolvedValue({
       id: "existing-audit",
@@ -155,6 +186,7 @@ describe("AuditService.startAudit idempotency", () => {
       config: JSON.stringify({ maxPages: 50, lighthouseStrategy: "auto" }),
       status: "running",
       workflowStartedAt: "2026-08-02T00:00:00.000Z",
+      providerVersion: "persisted-v1",
     });
 
     await expect(
@@ -178,5 +210,13 @@ describe("AuditService.startAudit idempotency", () => {
     });
     expect(workflowMocks.create).not.toHaveBeenCalled();
     expect(repositoryMocks.deleteAuditForProject).toHaveBeenCalled();
+    expect(repositoryMocks.releaseDispatchLease).toHaveBeenCalled();
+  });
+
+  it("requires an idempotency key for service starts", async () => {
+    await expect(
+      AuditService.startAudit(startInput({ idempotencyKey: undefined })),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    expect(workflowMocks.create).not.toHaveBeenCalled();
   });
 });

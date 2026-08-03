@@ -180,7 +180,13 @@ async function insertLighthouseResults(
   // Upsert: a step retry can charge a second DataForSEO call whose result
   // must not be silently dropped in favor of a failed first attempt.
   await executeInBatches(rows, (tx, row) => {
-    const { id: _id, auditId: _auditId, actualCostUsd, ...dataColumns } = row;
+    const {
+      id: _id,
+      auditId: _auditId,
+      actualCostUsd,
+      createdAt: _createdAt,
+      ...dataColumns
+    } = row;
     return tx
       .insert(auditLighthouseResults)
       .values(row)
@@ -306,6 +312,20 @@ async function getLighthouseResultById(input: {
   };
 }
 
+async function getLighthouseResultForAuditPageStrategy(input: {
+  auditId: string;
+  pageId: string;
+  strategy: "mobile" | "desktop";
+}) {
+  return db.query.auditLighthouseResults.findFirst({
+    where: and(
+      eq(auditLighthouseResults.auditId, input.auditId),
+      eq(auditLighthouseResults.pageId, input.pageId),
+      eq(auditLighthouseResults.strategy, input.strategy),
+    ),
+  });
+}
+
 export const AuditRepository = {
   ...AuditRunRepository,
   insertCrawledBatch,
@@ -316,4 +336,5 @@ export const AuditRepository = {
   hasPagesForAudit,
   getAuditResultsForProject,
   getLighthouseResultById,
+  getLighthouseResultForAuditPageStrategy,
 } as const;

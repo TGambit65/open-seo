@@ -1,10 +1,7 @@
 import { env } from "cloudflare:workers";
-import {
-  customerHasManagedAccess,
-  customerHasPaidPlan,
-  type BillingCustomerContext,
-} from "@/server/billing/subscription";
+import type { BillingCustomerContext } from "@/server/billing/subscription";
 import { AuditRepository } from "@/server/features/audit/repositories/AuditRepository";
+import { resolveAuditLimitTier } from "@/server/features/audit/services/audit-service-auth";
 import {
   AUDIT_LIMITS,
   clampAuditMaxPages,
@@ -20,24 +17,16 @@ import {
   type LighthouseStrategy,
 } from "@/server/lib/audit/types";
 import { normalizeAndValidateStartUrl } from "@/server/lib/audit/url-policy";
-import { isHostedServerAuthMode } from "@/server/lib/runtime-env";
-import { BRUTAL_AUDIT_LIMITS } from "@/shared/audit-provider";
+import {
+  AUDIT_PROVIDER_VERSION,
+  BRUTAL_AUDIT_LIMITS,
+} from "@/shared/audit-provider";
 
-// Plan-tier limits are the abuse bound in hosted mode: free accounts get one
-// small audit at a time, paid keeps the full limits, and customers with no
-// Autumn product at all are turned away. Self-hosted isn't gated.
-async function resolveAuditLimitTier(
-  organizationId: string,
-): Promise<AuditLimitTier> {
-  if (!(await isHostedServerAuthMode())) return "paid";
-  const [hasManagedAccess, hasPaidPlan] = await Promise.all([
-    customerHasManagedAccess(organizationId),
-    customerHasPaidPlan(organizationId),
-  ]);
-  if (!hasManagedAccess) {
-    throw new AppError("PAYMENT_REQUIRED", "Subscribe to run site audits");
+class AmbiguousWorkflowStartError extends Error {
+  constructor(readonly cause: unknown) {
+    super("Workflow start could not be confirmed.");
+    this.name = "AmbiguousWorkflowStartError";
   }
-  return hasPaidPlan ? "paid" : "free";
 }
 
 async function startAudit(input: {
@@ -101,7 +90,11 @@ async function startAudit(input: {
           config,
         });
       }
-      return { auditId: existing.id, idempotent: true };
+      return {
+        auditId: existing.id,
+        idempotent: true,
+        providerVersion: existing.providerVersion,
+      };
     }
   }
 
@@ -138,7 +131,11 @@ async function startAudit(input: {
         config,
       });
     }
-    return { auditId: existing.id, idempotent: true };
+    return {
+      auditId: existing.id,
+      idempotent: true,
+      providerVersion: existing.providerVersion,
+    };
   }
   if (!inserted) throw new AppError("CONFLICT", "Audit ID conflict.");
 
@@ -176,7 +173,8 @@ async function startAudit(input: {
     // risking duplicate provider work. Definitive application/capacity errors
     // are safe to roll back because no Workflow create was attempted.
     const ambiguousStart =
-      Boolean(input.idempotencyKey) && !(error instanceof AppError);
+      Boolean(input.idempotencyKey) &&
+      error instanceof AmbiguousWorkflowStartError;
     if (ambiguousStart) throw error;
 
     try {
@@ -186,11 +184,16 @@ async function startAudit(input: {
       // The workflow may never have been created, or may already be gone.
     }
 
+    await AuditRepository.releaseDispatchLease(auditId);
     await AuditRepository.deleteAuditForProject(auditId, input.projectId);
     throw error;
   }
 
-  return { auditId, idempotent: false };
+  return {
+    auditId,
+    idempotent: false,
+    providerVersion: AUDIT_PROVIDER_VERSION,
+  };
 }
 
 function assertIdempotentAuditMatches(
@@ -260,7 +263,7 @@ async function ensureAuditWorkflow(input: {
       const instance = await env.SITE_AUDIT_WORKFLOW.get(input.auditId);
       await instance.status();
     } catch {
-      throw error;
+      throw new AmbiguousWorkflowStartError(error);
     }
   }
   await AuditRepository.markWorkflowStarted(input.auditId);

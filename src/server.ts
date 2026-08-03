@@ -188,10 +188,18 @@ export default {
   ) {
     // Scope a per-request Postgres client for the cron run (no-op in D1 mode).
     await withPgClient(async () => {
-      await Promise.all([
+      const results = await Promise.allSettled([
         runScheduledRankChecks(env),
         AuditService.cleanupExpiredRawAudits(),
       ]);
+      for (const [index, result] of results.entries()) {
+        if (result.status === "rejected") {
+          console.error(
+            `${index === 0 ? "scheduled rank checks" : "raw audit cleanup"} failed:`,
+            result.reason,
+          );
+        }
+      }
     });
   },
 };

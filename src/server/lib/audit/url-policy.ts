@@ -159,16 +159,19 @@ function isBlockedIpv6(host: string): boolean {
   const segments = parseIpv6(host);
   if (!segments) return false;
 
-  const isMapped =
+  const embedsIpv4 =
     segments.slice(0, 5).every((segment) => segment === 0) &&
-    segments[5] === 0xffff;
-  if (isMapped) {
+    (segments[5] === 0 || segments[5] === 0xffff);
+  if (embedsIpv4) {
     const mapped = [
       segments[6] >> 8,
       segments[6] & 0xff,
       segments[7] >> 8,
       segments[7] & 0xff,
     ];
+    // The deprecated IPv4-compatible ::/96 range is not globally routable,
+    // regardless of whether its embedded IPv4 value would otherwise be public.
+    if (segments[5] === 0) return true;
     return isBlockedIpv4(mapped.join("."));
   }
 
@@ -208,6 +211,7 @@ type DnsJsonResponse = {
 async function resolveAddressRecords(
   hostname: string,
   type: "A" | "AAAA",
+  signal?: AbortSignal | null,
 ): Promise<string[]> {
   let response: Response;
   try {
@@ -215,10 +219,13 @@ async function resolveAddressRecords(
       `${DOH_ENDPOINT}?name=${encodeURIComponent(hostname)}&type=${type}`,
       {
         headers: { Accept: "application/dns-json" },
-        signal: AbortSignal.timeout(2_500),
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(2_500)])
+          : AbortSignal.timeout(2_500),
       },
     );
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason ?? error;
     throw new AppError("CRAWL_TARGET_BLOCKED", "Target DNS lookup failed.");
   }
 
@@ -245,7 +252,10 @@ async function resolveAddressRecords(
     .map((answer) => normalizeHost(answer.data));
 }
 
-async function assertPublicHostname(hostname: string): Promise<void> {
+async function assertPublicHostname(
+  hostname: string,
+  signal?: AbortSignal | null,
+): Promise<void> {
   const host = normalizeHost(hostname);
   if (isBlockedHost(host)) {
     throw new AppError("CRAWL_TARGET_BLOCKED");
@@ -253,8 +263,8 @@ async function assertPublicHostname(hostname: string): Promise<void> {
   if (isIpLiteral(host)) return;
 
   const [v4, v6] = await Promise.all([
-    resolveAddressRecords(host, "A"),
-    resolveAddressRecords(host, "AAAA"),
+    resolveAddressRecords(host, "A", signal),
+    resolveAddressRecords(host, "AAAA", signal),
   ]);
   const addresses = [...v4, ...v6];
   if (addresses.length === 0) {
@@ -312,10 +322,26 @@ function parseAuditUrl(input: string, addDefaultProtocol: boolean): URL {
  * Cloudflare's `global_fetch_strictly_public` compatibility flag remains the
  * egress enforcement layer against DNS rebinding between this check and fetch.
  */
-export async function validatePublicAuditUrl(input: string): Promise<string> {
+export async function validatePublicAuditUrl(
+  input: string,
+  signal?: AbortSignal | null,
+): Promise<string> {
   const parsed = parseAuditUrl(input, false);
-  await assertPublicHostname(parsed.hostname);
+  await assertPublicHostname(parsed.hostname, signal);
   return parsed.toString();
+}
+
+function withoutCredentialHeaders(init: RequestInit): RequestInit {
+  const headers = new Headers(init.headers);
+  for (const name of [
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "cookie2",
+  ]) {
+    headers.delete(name);
+  }
+  return { ...init, headers };
 }
 
 /**
@@ -327,9 +353,18 @@ export async function fetchPublicAuditUrl(
   init: RequestInit = {},
 ): Promise<Response> {
   let current = input;
+  let previousOrigin: string | null = null;
   for (let redirects = 0; redirects <= MAX_PUBLIC_REDIRECTS; redirects += 1) {
-    const validated = await validatePublicAuditUrl(current);
-    const response = await fetch(validated, { ...init, redirect: "manual" });
+    const validated = await validatePublicAuditUrl(current, init.signal);
+    const currentOrigin = new URL(validated).origin;
+    const requestInit =
+      previousOrigin && previousOrigin !== currentOrigin
+        ? withoutCredentialHeaders(init)
+        : init;
+    const response = await fetch(validated, {
+      ...requestInit,
+      redirect: "manual",
+    });
     if (response.status < 300 || response.status >= 400) return response;
 
     const location = response.headers.get("location");
@@ -337,6 +372,7 @@ export async function fetchPublicAuditUrl(
     if (redirects === MAX_PUBLIC_REDIRECTS) {
       throw new AppError("CRAWL_TARGET_BLOCKED", "Too many redirects.");
     }
+    previousOrigin = currentOrigin;
     current = new URL(location, validated).toString();
   }
   throw new AppError("CRAWL_TARGET_BLOCKED");

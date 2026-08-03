@@ -28,13 +28,13 @@ function dnsResponse(addresses: string[], type: "A" | "AAAA", status = 0) {
 
 function installDns(
   records: DnsRecords,
-  targetFetch?: (url: string) => Response,
+  targetFetch?: (url: string, init?: RequestInit) => Response,
 ) {
-  vi.mocked(fetch).mockImplementation(async (input) => {
+  vi.mocked(fetch).mockImplementation(async (input, init) => {
     const url = requestUrl(input);
     if (!url.startsWith("https://cloudflare-dns.com/dns-query")) {
       if (!targetFetch) throw new Error(`Unexpected target fetch: ${url}`);
-      return targetFetch(url);
+      return targetFetch(url, init);
     }
 
     const parsed = new URL(url);
@@ -76,6 +76,7 @@ describe("public audit URL policy", () => {
     "http://10.0.0.1",
     "http://169.254.169.254/latest/meta-data",
     "http://[::1]",
+    "http://[::127.0.0.1]",
     "http://[fe80::1]",
     "http://[fc00::1]",
     "http://192.0.2.1",
@@ -131,6 +132,18 @@ describe("public audit URL policy", () => {
     ).rejects.toMatchObject({ code: "CRAWL_TARGET_BLOCKED" });
   });
 
+  it("rejects an IPv4-compatible private IPv6 DNS answer", async () => {
+    installDns({
+      "compatible.example": {
+        A: ["93.184.216.34"],
+        AAAA: ["::7f00:1"],
+      },
+    });
+    await expect(
+      normalizeAndValidateStartUrl("https://compatible.example"),
+    ).rejects.toMatchObject({ code: "CRAWL_TARGET_BLOCKED" });
+  });
+
   it("validates every redirect before connecting", async () => {
     const connected: string[] = [];
     installDns(
@@ -151,6 +164,85 @@ describe("public audit URL policy", () => {
       fetchPublicAuditUrl("https://public.example/start"),
     ).rejects.toMatchObject({ code: "CRAWL_TARGET_BLOCKED" });
     expect(connected).toEqual(["https://public.example/start"]);
+  });
+
+  it("follows a bounded public redirect chain", async () => {
+    const connected: string[] = [];
+    installDns(
+      {
+        "one.example": { A: ["93.184.216.34"] },
+        "two.example": { A: ["93.184.216.35"] },
+      },
+      (url) => {
+        connected.push(url);
+        return url.includes("one.example")
+          ? new Response(null, {
+              status: 302,
+              headers: { location: "https://two.example/final" },
+            })
+          : new Response("ok", { status: 200 });
+      },
+    );
+    await expect(
+      fetchPublicAuditUrl("https://one.example/start"),
+    ).resolves.toMatchObject({ status: 200 });
+    expect(connected).toEqual([
+      "https://one.example/start",
+      "https://two.example/final",
+    ]);
+  });
+
+  it("stops a redirect loop at the configured bound", async () => {
+    installDns(
+      { "loop.example": { A: ["93.184.216.34"] } },
+      () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: "/again" },
+        }),
+    );
+    await expect(
+      fetchPublicAuditUrl("https://loop.example/start"),
+    ).rejects.toMatchObject({
+      code: "CRAWL_TARGET_BLOCKED",
+      message: "Too many redirects.",
+    });
+  });
+
+  it("removes credential headers on a cross-origin redirect", async () => {
+    const seen = new Map<string, Headers>();
+    installDns(
+      {
+        "one.example": { A: ["93.184.216.34"] },
+        "two.example": { A: ["93.184.216.35"] },
+      },
+      (url, init) => {
+        seen.set(url, new Headers(init?.headers));
+        return url.includes("one.example")
+          ? new Response(null, {
+              status: 302,
+              headers: { location: "https://two.example/final" },
+            })
+          : new Response("ok", { status: 200 });
+      },
+    );
+    await fetchPublicAuditUrl("https://one.example/start", {
+      headers: {
+        Authorization: "Bearer secret",
+        Cookie: "session=secret",
+        "X-Audit-Trace": "safe",
+      },
+    });
+    expect(seen.get("https://one.example/start")?.get("authorization")).toBe(
+      "Bearer secret",
+    );
+    expect(seen.get("https://two.example/final")?.get("authorization")).toBe(
+      null,
+    );
+    expect(seen.get("https://two.example/final")?.get("cookie")).toBe(null);
+    expect(seen.get("https://two.example/final")?.get("x-audit-trace")).toBe(
+      "safe",
+    );
   });
 
   it("re-resolves a hostname before each outbound fetch", async () => {

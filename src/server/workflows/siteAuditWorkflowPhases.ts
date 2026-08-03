@@ -175,7 +175,8 @@ async function runLighthousePhase(
       undefined,
       async () => {
         const results = [];
-        for (const { url, pageId } of batch) {
+        let budgetExhausted = false;
+        lighthouseBatch: for (const { url, pageId } of batch) {
           for (const strategy of ["mobile", "desktop"] as const) {
             const result = await fetchAndStoreLighthouseResult({
               url,
@@ -185,8 +186,14 @@ async function runLighthousePhase(
               projectId,
               auditId,
             });
-            await AuditRepository.insertLighthouseResults(auditId, [result]);
+            if (!result.reused) {
+              await AuditRepository.insertLighthouseResults(auditId, [result]);
+            }
             results.push(result);
+            if (result.budgetExhausted) {
+              budgetExhausted = true;
+              break lighthouseBatch;
+            }
           }
         }
 
@@ -196,12 +203,13 @@ async function runLighthousePhase(
           lighthouseCompleted: priorCompleted + completed,
           lighthouseFailed: priorFailed + failed,
         });
-        return { completed, failed };
+        return { completed, failed, budgetExhausted };
       },
     );
 
     completedChecks += counts.completed;
     failedChecks += counts.failed;
+    if (counts.budgetExhausted) break;
   }
 }
 

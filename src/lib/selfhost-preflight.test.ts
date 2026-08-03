@@ -75,6 +75,18 @@ describe("runSelfhostPreflight", () => {
     );
   });
 
+  it("forbids hosted mode when a service identity is configured", () => {
+    const result = runSelfhostPreflight({
+      AUTH_MODE: "hosted",
+      ACCESS_SERVICE_TOKEN_COMMON_NAME: "client.access",
+    });
+
+    expect(result.failed).toBe(true);
+    expect(itemFor(result, "AUTH_MODE")?.message).toContain(
+      "cloudflare_access",
+    );
+  });
+
   it("warns on a DataForSEO key that is not base64 login:password", () => {
     const result = runSelfhostPreflight({
       AUTH_MODE: "local_noauth",

@@ -78,6 +78,16 @@ function checkAuthMode(env: EnvRecord, items: PreflightItem[]): void {
   }
 
   if (mode === "hosted") {
+    if (configuredServiceIdentityKeys.length > 0) {
+      items.push({
+        key: "auth",
+        name: "AUTH_MODE",
+        level: "fail",
+        message:
+          "Access service identities require AUTH_MODE=cloudflare_access.",
+      });
+      return;
+    }
     const missing = [
       "BETTER_AUTH_URL",
       "BETTER_AUTH_SECRET",
