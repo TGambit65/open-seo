@@ -1,47 +1,17 @@
 import { z } from "zod";
-import { AuditRepository } from "@/server/features/audit/repositories/AuditRepository";
 import { AuditService } from "@/server/features/audit/services/AuditService";
 import { AppError } from "@/server/lib/errors";
 import { captureServerEvent } from "@/server/lib/posthog";
-import {
-  AUDIT_ISSUE_TYPES,
-  getIssueDescriptor,
-  ISSUE_SEVERITY_ORDER,
-} from "@/shared/audit-issues";
 import { mcpResponse } from "@/server/mcp/formatters";
 import { buildProjectMeta } from "@/server/mcp/context";
-import {
-  looseObjectOutputSchema,
-  optionalMetaOutputSchema,
-} from "@/server/mcp/output-schemas";
+import { optionalMetaOutputSchema } from "@/server/mcp/output-schemas";
 import { withMcpProjectAuth } from "@/server/mcp/project-auth";
 import { projectIdSchema } from "@/server/mcp/schemas";
-
-const auditIdSchema = z
-  .string()
-  .optional()
-  .describe("Audit ID. If omitted, uses the project's most recent audit.");
-
-async function resolveAudit(projectId: string, auditId?: string) {
-  const audit = auditId
-    ? await AuditRepository.getAuditForProject(auditId, projectId)
-    : await AuditRepository.getLatestAuditForProject(projectId);
-  if (!audit) {
-    throw new AppError(
-      "NOT_FOUND",
-      auditId
-        ? `Audit ${auditId} not found in this project.`
-        : "No audits exist for this project yet. Start one with run_site_audit.",
-    );
-  }
-  return audit;
-}
-
-function auditPath(projectId: string, auditId: string) {
-  return `/p/${projectId}/audit?auditId=${auditId}`;
-}
-
-// ─── run_site_audit ──────────────────────────────────────────────────────────
+import {
+  auditIdSchema,
+  auditPath,
+  resolveAudit,
+} from "@/server/mcp/tools/site-audit-tool-shared";
 
 const runInputSchema = {
   projectId: projectIdSchema,
@@ -57,7 +27,16 @@ const runInputSchema = {
     .boolean()
     .optional()
     .describe(
-      "Run Lighthouse on a sample of up to 10 representative pages (default true).",
+      "Run Lighthouse on a sample of up to 10 representative pages (default false).",
+    ),
+  idempotencyKey: z
+    .string()
+    .min(1)
+    .max(200)
+    .regex(/^[A-Za-z0-9._:-]+$/)
+    .optional()
+    .describe(
+      "Stable caller-generated key. Repeating the same key and parameters returns the same audit.",
     ),
 } as const;
 
@@ -73,9 +52,11 @@ export const runSiteAuditTool = {
     outputSchema: z
       .object({
         auditId: z.string(),
+        idempotent: z.boolean(),
+        providerVersion: z.string(),
         ...optionalMetaOutputSchema,
       })
-      .passthrough(),
+      .strict(),
     annotations: {
       readOnlyHint: false,
       openWorldHint: true,
@@ -83,21 +64,26 @@ export const runSiteAuditTool = {
     },
   },
   handler: withMcpProjectAuth(async (args: RunArgs, context) => {
-    const lighthouseStrategy = (args.runLighthouse ?? true) ? "auto" : "none";
+    const lighthouseStrategy = (args.runLighthouse ?? false) ? "auto" : "none";
     const limitTier = await AuditService.resolveAuditLimitTier(
       context.auth.organizationId,
     );
     let auditId: string;
+    let idempotent: boolean;
+    let providerVersion: string;
     try {
-      ({ auditId } = await AuditService.startAudit({
-        actorUserId: context.auth.userId,
-        billingCustomer: context.billing,
-        projectId: args.projectId,
-        startUrl: args.url,
-        maxPages: args.maxPages,
-        lighthouseStrategy,
-        limitTier,
-      }));
+      ({ auditId, idempotent, providerVersion } = await AuditService.startAudit(
+        {
+          actorUserId: context.auth.userId,
+          billingCustomer: context.billing,
+          projectId: args.projectId,
+          startUrl: args.url,
+          maxPages: args.maxPages,
+          lighthouseStrategy,
+          limitTier,
+          idempotencyKey: args.idempotencyKey,
+        },
+      ));
     } catch (error) {
       if (
         error instanceof AppError &&
@@ -123,6 +109,7 @@ export const runSiteAuditTool = {
         project_id: args.projectId,
         max_pages: args.maxPages ?? 50,
         run_lighthouse: lighthouseStrategy !== "none",
+        idempotent,
         source: "mcp",
       },
     });
@@ -134,12 +121,14 @@ export const runSiteAuditTool = {
         args.projectId,
         auditPath(args.projectId, auditId),
       ),
-      structuredContent: { auditId },
+      structuredContent: {
+        auditId,
+        idempotent,
+        providerVersion,
+      },
     });
   }),
 };
-
-// ─── get_audit_status ────────────────────────────────────────────────────────
 
 const statusInputSchema = {
   projectId: projectIdSchema,
@@ -155,12 +144,25 @@ export const getAuditStatusTool = {
     description:
       "Check the progress of a site audit (phase, pages crawled, Lighthouse progress). Free — reads OpenSEO state. Omit auditId for the most recent audit.",
     inputSchema: statusInputSchema,
-    outputSchema: z
-      .object({
-        status: looseObjectOutputSchema,
-        ...optionalMetaOutputSchema,
-      })
-      .passthrough(),
+    outputSchema: z.strictObject({
+      status: z.strictObject({
+        id: z.string(),
+        startUrl: z.string(),
+        status: z.enum(["running", "completed", "failed"]),
+        pagesCrawled: z.number().int().nonnegative(),
+        pagesTotal: z.number().int().nonnegative(),
+        lighthouseTotal: z.number().int().nonnegative(),
+        lighthouseCompleted: z.number().int().nonnegative(),
+        lighthouseFailed: z.number().int().nonnegative(),
+        currentPhase: z.string().nullable(),
+        startedAt: z.string(),
+        completedAt: z.string().nullable(),
+        crawlCompleted: z.boolean(),
+        providerVersion: z.string(),
+        actualCostUsd: z.number().nonnegative(),
+      }),
+      ...optionalMetaOutputSchema,
+    }),
     annotations: {
       readOnlyHint: true,
       openWorldHint: false,
@@ -168,11 +170,8 @@ export const getAuditStatusTool = {
     },
   },
   handler: withMcpProjectAuth(async (args: StatusArgs, context) => {
-    // getStatus fetches (and self-heals) the audit row itself; only hit the
-    // DB here when we need to default to the most recent audit.
     const auditId = args.auditId ?? (await resolveAudit(args.projectId)).id;
     const status = await AuditService.getStatus(auditId, args.projectId);
-
     const lighthouseNote =
       status.lighthouseTotal > 0
         ? `, lighthouse ${status.lighthouseCompleted + status.lighthouseFailed}/${status.lighthouseTotal}`
@@ -185,215 +184,6 @@ export const getAuditStatusTool = {
         auditPath(args.projectId, status.id),
       ),
       structuredContent: { status },
-    });
-  }),
-};
-
-// ─── get_audit_issues ────────────────────────────────────────────────────────
-
-const issuesInputSchema = {
-  projectId: projectIdSchema,
-  auditId: auditIdSchema,
-  severity: z
-    .enum(["critical", "warning", "info"])
-    .optional()
-    .describe("Only return issues of this severity."),
-  issueType: z
-    .string()
-    .optional()
-    .describe(
-      `Only return issues of this type. One of: ${Object.keys(AUDIT_ISSUE_TYPES).join(", ")}`,
-    ),
-  limit: z
-    .number()
-    .int()
-    .min(1)
-    .max(1_000)
-    .optional()
-    .describe("Max issues to return (default 200)."),
-} as const;
-
-type IssuesArgs = z.infer<z.ZodObject<typeof issuesInputSchema>>;
-
-export const getAuditIssuesTool = {
-  name: "get_audit_issues",
-  config: {
-    title: "Get site audit issues",
-    description:
-      "Read the prioritized issue report from a completed site audit. Every issue carries a how_to_fix with concrete remediation steps an agent can act on. Free — reads OpenSEO state. Omit auditId for the most recent audit.",
-    inputSchema: issuesInputSchema,
-    outputSchema: z
-      .object({
-        summary: z.array(looseObjectOutputSchema),
-        issues: z.array(looseObjectOutputSchema),
-        ...optionalMetaOutputSchema,
-      })
-      .passthrough(),
-    annotations: {
-      readOnlyHint: true,
-      openWorldHint: false,
-      destructiveHint: false,
-    },
-  },
-  handler: withMcpProjectAuth(async (args: IssuesArgs, context) => {
-    const audit = await resolveAudit(args.projectId, args.auditId);
-    const unsorted = await AuditRepository.getIssuesForAudit(audit.id, {
-      severity: args.severity,
-      issueType: args.issueType,
-    });
-    // Severity-first so truncation drops info rows, never critical ones.
-    const rows = unsorted.toSorted(
-      (a, b) =>
-        ISSUE_SEVERITY_ORDER[a.severity] - ISSUE_SEVERITY_ORDER[b.severity] ||
-        a.issueType.localeCompare(b.issueType),
-    );
-
-    const counts = new Map<string, number>();
-    for (const row of rows) {
-      counts.set(row.issueType, (counts.get(row.issueType) ?? 0) + 1);
-    }
-    const summary = Array.from(counts.entries())
-      .map(([issueType, count]) => {
-        const descriptor = getIssueDescriptor(issueType);
-        return {
-          issueType,
-          title: descriptor?.title ?? issueType,
-          severity: descriptor?.severity ?? "info",
-          count,
-        };
-      })
-      .toSorted(
-        (a, b) =>
-          ISSUE_SEVERITY_ORDER[a.severity] - ISSUE_SEVERITY_ORDER[b.severity] ||
-          b.count - a.count,
-      );
-
-    const limit = args.limit ?? 200;
-    const issues = rows.slice(0, limit).map((row) => {
-      const descriptor = getIssueDescriptor(row.issueType);
-      return {
-        severity: row.severity,
-        issueType: row.issueType,
-        title: descriptor?.title ?? row.issueType,
-        url: row.pageUrl,
-        details: row.detailsJson
-          ? (JSON.parse(row.detailsJson) as unknown)
-          : null,
-        howToFix: descriptor?.howToFix ?? null,
-      };
-    });
-
-    const text =
-      rows.length === 0
-        ? args.severity || args.issueType
-          ? `No issues found for audit ${audit.id} matching the given filters.`
-          : `No issues recorded for audit ${audit.id}. Note: audits run before issue checks existed have no issue data — re-run the audit with run_site_audit to get a real report.`
-        : [
-            `Audit ${audit.id} (${audit.startUrl}): ${rows.length} issues${rows.length > limit ? ` (showing ${limit})` : ""}.`,
-            "By type:",
-            ...summary.map(
-              (entry) =>
-                `- [${entry.severity}] ${entry.title} (${entry.issueType}): ${entry.count}`,
-            ),
-            "Full issue rows with how_to_fix instructions are in structuredContent.issues.",
-          ].join("\n");
-
-    return mcpResponse({
-      text,
-      meta: buildProjectMeta(
-        context,
-        args.projectId,
-        auditPath(args.projectId, audit.id),
-      ),
-      structuredContent: { summary, issues },
-    });
-  }),
-};
-
-// ─── get_audit_pages ─────────────────────────────────────────────────────────
-
-const pagesInputSchema = {
-  projectId: projectIdSchema,
-  auditId: auditIdSchema,
-  fetchClass: z
-    .enum(["ok", "blocked", "error"])
-    .optional()
-    .describe(
-      'Filter by fetch outcome ("blocked" = the site\'s bot protection challenged the crawler).',
-    ),
-  statusCode: z
-    .number()
-    .int()
-    .optional()
-    .describe("Filter by exact HTTP status code."),
-  urlContains: z
-    .string()
-    .optional()
-    .describe("Filter to URLs containing this substring."),
-  limit: z
-    .number()
-    .int()
-    .min(1)
-    .max(1_000)
-    .optional()
-    .describe("Max pages to return (default 100)."),
-} as const;
-
-type PagesArgs = z.infer<z.ZodObject<typeof pagesInputSchema>>;
-
-export const getAuditPagesTool = {
-  name: "get_audit_pages",
-  config: {
-    title: "Get site audit pages",
-    description:
-      "List crawled pages from a site audit with per-page SEO data (status, title, description, word count, indexability, crawl depth, link counts). Free — reads OpenSEO state. Omit auditId for the most recent audit.",
-    inputSchema: pagesInputSchema,
-    outputSchema: z
-      .object({
-        pages: z.array(looseObjectOutputSchema),
-        total: z.number(),
-        ...optionalMetaOutputSchema,
-      })
-      .passthrough(),
-    annotations: {
-      readOnlyHint: true,
-      openWorldHint: false,
-      destructiveHint: false,
-    },
-  },
-  handler: withMcpProjectAuth(async (args: PagesArgs, context) => {
-    const audit = await resolveAudit(args.projectId, args.auditId);
-    const allPages = await AuditRepository.getPagesForAudit(audit.id);
-
-    const filtered = allPages.filter(
-      (page) =>
-        (!args.fetchClass || page.fetchClass === args.fetchClass) &&
-        (args.statusCode === undefined ||
-          page.statusCode === args.statusCode) &&
-        (!args.urlContains || page.url.includes(args.urlContains)),
-    );
-    const limit = args.limit ?? 100;
-    const pages = filtered.slice(0, limit);
-
-    const text = [
-      `Audit ${audit.id}: ${filtered.length} pages${filtered.length > limit ? ` (showing ${limit})` : ""}.`,
-      ...pages
-        .slice(0, 25)
-        .map(
-          (page) =>
-            `- ${page.statusCode} ${page.url}${page.fetchClass !== "ok" ? ` [${page.fetchClass}]` : ""}  "${page.title ?? ""}"`,
-        ),
-      "Full rows are in structuredContent.pages.",
-    ].join("\n");
-
-    return mcpResponse({
-      text,
-      meta: buildProjectMeta(
-        context,
-        args.projectId,
-        auditPath(args.projectId, audit.id),
-      ),
-      structuredContent: { pages, total: filtered.length },
     });
   }),
 };

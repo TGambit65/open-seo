@@ -3,8 +3,79 @@ import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 import { AppError } from "@/server/lib/errors";
 import { validateTeamDomain } from "@/shared/selfhost-checks";
 import { classifyAccessVerificationError } from "./accessTokenErrors";
-import { resolveDelegatedContext } from "./delegated";
+import {
+  resolveDelegatedContext,
+  resolveFixedDelegatedContext,
+} from "./delegated";
 import type { EnsuredUserContext } from "./types";
+
+export type AccessServiceIdentityConfig = {
+  commonName: string | null;
+  userId: string | null;
+  userEmail: string | null;
+  organizationId: string | null;
+};
+
+type AccessPrincipal =
+  | { kind: "human"; userId: string; userEmail: string }
+  | {
+      kind: "service";
+      userId: string;
+      userEmail: string;
+      organizationId: string;
+    };
+
+/**
+ * Fail-closed identity classifier for verified Cloudflare Access payloads.
+ * Cloudflare service-token JWTs have an empty subject and identify the token
+ * client in `common_name`; human identities instead carry `sub` and `email`.
+ */
+export function classifyAccessPrincipal(
+  payload: JWTPayload,
+  service: AccessServiceIdentityConfig,
+): AccessPrincipal {
+  const commonName =
+    typeof payload.common_name === "string" && payload.common_name.trim()
+      ? payload.common_name.trim()
+      : null;
+
+  if (commonName) {
+    const missing = [
+      service.commonName ? null : "ACCESS_SERVICE_TOKEN_COMMON_NAME",
+      service.userId ? null : "ACCESS_SERVICE_USER_ID",
+      service.userEmail ? null : "ACCESS_SERVICE_USER_EMAIL",
+      service.organizationId ? null : "ACCESS_SERVICE_ORGANIZATION_ID",
+    ].filter((name): name is string => name !== null);
+    if (missing.length > 0) {
+      throw new AppError(
+        "AUTH_CONFIG_MISSING",
+        `Cloudflare Access service identity is not fully configured: set ${missing.join(", ")}.`,
+      );
+    }
+    // A service token has no human subject/email. Reject hybrid or malformed
+    // claims rather than letting them fall through to either identity path.
+    if (
+      commonName !== service.commonName ||
+      (typeof payload.sub === "string" && payload.sub.length > 0) ||
+      typeof payload.email === "string"
+    ) {
+      throw new AppError("UNAUTHENTICATED");
+    }
+    return {
+      kind: "service",
+      userId: service.userId!,
+      userEmail: service.userEmail!,
+      organizationId: service.organizationId!,
+    };
+  }
+
+  const userId = typeof payload.sub === "string" ? payload.sub : null;
+  const userEmail = typeof payload.email === "string" ? payload.email : null;
+  if (!userId || !userEmail) {
+    throw new AppError("UNAUTHENTICATED");
+  }
+  return { kind: "human", userId, userEmail };
+}
 
 const jwksByTeamDomain = new Map<
   string,
@@ -87,12 +158,14 @@ export async function resolveCloudflareAccessContext(
     throw classifyAccessVerificationError(error);
   }
 
-  const userId = typeof payload.sub === "string" ? payload.sub : null;
-  const userEmail = typeof payload.email === "string" ? payload.email : null;
+  const principal = classifyAccessPrincipal(payload, {
+    commonName: env.ACCESS_SERVICE_TOKEN_COMMON_NAME?.trim() || null,
+    userId: env.ACCESS_SERVICE_USER_ID?.trim() || null,
+    userEmail: env.ACCESS_SERVICE_USER_EMAIL?.trim() || null,
+    organizationId: env.ACCESS_SERVICE_ORGANIZATION_ID?.trim() || null,
+  });
 
-  if (!userId || !userEmail) {
-    throw new AppError("UNAUTHENTICATED");
-  }
-
-  return resolveDelegatedContext(userId, userEmail);
+  return principal.kind === "service"
+    ? resolveFixedDelegatedContext(principal)
+    : resolveDelegatedContext(principal.userId, principal.userEmail);
 }

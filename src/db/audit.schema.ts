@@ -4,9 +4,11 @@ import {
   integer,
   real,
   index,
+  uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 import { projects } from "./app.schema";
+import { AUDIT_PROVIDER_VERSION } from "@/shared/audit-provider";
 
 // ============================================================================
 // Site Audit tables
@@ -22,12 +24,18 @@ export const audits = sqliteTable(
       .references(() => projects.id, { onDelete: "cascade" }),
     startedByUserId: text("started_by_user_id").notNull(),
     startUrl: text("start_url").notNull(),
+    origin: text("origin"),
+    idempotencyKey: text("idempotency_key"),
+    providerVersion: text("provider_version")
+      .notNull()
+      .default(AUDIT_PROVIDER_VERSION),
     status: text("status", {
       enum: ["running", "completed", "failed"],
     })
       .notNull()
       .default("running"),
     workflowInstanceId: text("workflow_instance_id"),
+    workflowStartedAt: text("workflow_started_at"),
     // JSON config: { maxPages, lighthouseStrategy }
     config: text("config").notNull().default("{}"),
     // Progress & summary
@@ -37,15 +45,45 @@ export const audits = sqliteTable(
     lighthouseCompleted: integer("lighthouse_completed").notNull().default(0),
     lighthouseFailed: integer("lighthouse_failed").notNull().default(0),
     currentPhase: text("current_phase").default("discovery"),
+    crawlCompleted: integer("crawl_completed", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    actualCostUsd: real("actual_cost_usd").notNull().default(0),
     startedAt: text("started_at")
       .notNull()
       .default(sql`(current_timestamp)`),
     completedAt: text("completed_at"),
+    rawDeleteAfter: text("raw_delete_after"),
+    rawDeletedAt: text("raw_deleted_at"),
   },
   (table) => [
     index("audits_project_id_idx").on(table.projectId),
     index("audits_started_by_user_id_idx").on(table.startedByUserId),
+    index("audits_origin_status_idx").on(table.origin, table.status),
+    index("audits_raw_delete_after_idx").on(table.rawDeleteAfter),
+    uniqueIndex("audits_project_idempotency_uidx").on(
+      table.projectId,
+      table.idempotencyKey,
+    ),
   ],
+);
+
+// Two global provider slots. A unique origin enforces one active audit per
+// origin, while the integer primary key bounds the deployment to slots 1–2.
+export const auditDispatchLeases = sqliteTable(
+  "audit_dispatch_leases",
+  {
+    slot: integer("slot").primaryKey(),
+    auditId: text("audit_id")
+      .notNull()
+      .unique()
+      .references(() => audits.id, { onDelete: "cascade" }),
+    origin: text("origin").notNull().unique(),
+    acquiredAt: text("acquired_at")
+      .notNull()
+      .default(sql`(current_timestamp)`),
+  },
+  (table) => [index("audit_dispatch_leases_origin_idx").on(table.origin)],
 );
 
 // One row per crawled page
@@ -195,6 +233,14 @@ export const auditLighthouseResults = sqliteTable(
     errorMessage: text("error_message"),
     r2Key: text("r2_key"),
     payloadSizeBytes: integer("payload_size_bytes"),
+    providerVersion: text("provider_version")
+      .notNull()
+      .default(AUDIT_PROVIDER_VERSION),
+    lighthouseVersion: text("lighthouse_version"),
+    actualCostUsd: real("actual_cost_usd").notNull().default(0),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(current_timestamp)`),
   },
   (table) => [
     index("audit_lighthouse_results_audit_id_idx").on(table.auditId),

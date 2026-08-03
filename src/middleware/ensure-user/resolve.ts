@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { getAuthMode, isHostedAuthMode } from "@/lib/auth-mode";
+import { AppError } from "@/server/lib/errors";
 import { resolveCloudflareAccessContext } from "./cloudflareAccess";
 import { resolveLocalNoAuthContext } from "./delegated";
 import { resolveHostedContext } from "./hosted";
@@ -13,6 +14,15 @@ export async function resolveUserContextFromHeaders(
 ): Promise<EnsuredUserContext> {
   const authMode = getAuthMode(env.AUTH_MODE);
   if (authMode === "local_noauth") {
+    // Presence of a configured service identity marks an unattended/public
+    // integration deployment. Never silently downgrade such a deployment to
+    // the unauthenticated local administrator.
+    if (env.ACCESS_SERVICE_TOKEN_COMMON_NAME?.trim()) {
+      throw new AppError(
+        "AUTH_CONFIG_MISSING",
+        "ACCESS_SERVICE_TOKEN_COMMON_NAME requires AUTH_MODE=cloudflare_access.",
+      );
+    }
     return resolveLocalNoAuthContext();
   }
   if (isHostedAuthMode(authMode)) {

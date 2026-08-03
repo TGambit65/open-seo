@@ -49,6 +49,44 @@ describe("runSelfhostPreflight", () => {
     expect(itemFor(result, "TEAM_DOMAIN")?.message).toContain("https://");
   });
 
+  it("fails a partial Access service identity configuration", () => {
+    const result = runSelfhostPreflight({
+      AUTH_MODE: "cloudflare_access",
+      TEAM_DOMAIN: "https://example.cloudflareaccess.com",
+      POLICY_AUD: "aud-tag",
+      ACCESS_SERVICE_TOKEN_COMMON_NAME: "client.access",
+    });
+
+    expect(result.failed).toBe(true);
+    expect(itemFor(result, "Access service identity")?.message).toContain(
+      "ACCESS_SERVICE_ORGANIZATION_ID",
+    );
+  });
+
+  it("forbids local_noauth when a service identity is configured", () => {
+    const result = runSelfhostPreflight({
+      AUTH_MODE: "local_noauth",
+      ACCESS_SERVICE_TOKEN_COMMON_NAME: "client.access",
+    });
+
+    expect(result.failed).toBe(true);
+    expect(itemFor(result, "AUTH_MODE")?.message).toContain(
+      "cloudflare_access",
+    );
+  });
+
+  it("forbids hosted mode when a service identity is configured", () => {
+    const result = runSelfhostPreflight({
+      AUTH_MODE: "hosted",
+      ACCESS_SERVICE_TOKEN_COMMON_NAME: "client.access",
+    });
+
+    expect(result.failed).toBe(true);
+    expect(itemFor(result, "AUTH_MODE")?.message).toContain(
+      "cloudflare_access",
+    );
+  });
+
   it("warns on a DataForSEO key that is not base64 login:password", () => {
     const result = runSelfhostPreflight({
       AUTH_MODE: "local_noauth",

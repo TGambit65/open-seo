@@ -7,6 +7,7 @@ import { resolveUserContextFromHeaders } from "@/middleware/ensure-user/resolve"
 import { ProjectRepository } from "@/server/features/projects/repositories/ProjectRepository";
 import { SamSessionRepository } from "@/server/features/sam/SamSessionRepository";
 import { runScheduledRankChecks } from "@/server/features/rank-tracking/services/scheduledRankChecks";
+import { AuditService } from "@/server/features/audit/services/AuditService";
 import { getOrCreateOrganizationCustomer } from "@/server/billing/subscription";
 import { isHostedServerAuthMode } from "@/server/lib/runtime-env";
 import { getAuthMode, isHostedAuthMode } from "@/lib/auth-mode";
@@ -186,6 +187,19 @@ export default {
     _ctx: ExecutionContext,
   ) {
     // Scope a per-request Postgres client for the cron run (no-op in D1 mode).
-    await withPgClient(() => runScheduledRankChecks(env));
+    await withPgClient(async () => {
+      const results = await Promise.allSettled([
+        runScheduledRankChecks(env),
+        AuditService.cleanupExpiredRawAudits(),
+      ]);
+      for (const [index, result] of results.entries()) {
+        if (result.status === "rejected") {
+          console.error(
+            `${index === 0 ? "scheduled rank checks" : "raw audit cleanup"} failed:`,
+            result.reason,
+          );
+        }
+      }
+    });
   },
 };

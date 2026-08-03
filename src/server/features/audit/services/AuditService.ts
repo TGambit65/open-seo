@@ -1,10 +1,7 @@
 import { env } from "cloudflare:workers";
-import {
-  customerHasManagedAccess,
-  customerHasPaidPlan,
-  type BillingCustomerContext,
-} from "@/server/billing/subscription";
+import type { BillingCustomerContext } from "@/server/billing/subscription";
 import { AuditRepository } from "@/server/features/audit/repositories/AuditRepository";
+import { resolveAuditLimitTier } from "@/server/features/audit/services/audit-service-auth";
 import {
   AUDIT_LIMITS,
   clampAuditMaxPages,
@@ -13,29 +10,23 @@ import {
 } from "@/server/features/audit/services/audit-capacity";
 import { AppError } from "@/server/lib/errors";
 import { AuditProgressKV } from "@/server/lib/audit/progress-kv";
+import { deleteFromR2 } from "@/server/lib/r2";
 import {
   parseAuditConfig,
   type AuditConfig,
   type LighthouseStrategy,
 } from "@/server/lib/audit/types";
 import { normalizeAndValidateStartUrl } from "@/server/lib/audit/url-policy";
-import { isHostedServerAuthMode } from "@/server/lib/runtime-env";
+import {
+  AUDIT_PROVIDER_VERSION,
+  BRUTAL_AUDIT_LIMITS,
+} from "@/shared/audit-provider";
 
-// Plan-tier limits are the abuse bound in hosted mode: free accounts get one
-// small audit at a time, paid keeps the full limits, and customers with no
-// Autumn product at all are turned away. Self-hosted isn't gated.
-async function resolveAuditLimitTier(
-  organizationId: string,
-): Promise<AuditLimitTier> {
-  if (!(await isHostedServerAuthMode())) return "paid";
-  const [hasManagedAccess, hasPaidPlan] = await Promise.all([
-    customerHasManagedAccess(organizationId),
-    customerHasPaidPlan(organizationId),
-  ]);
-  if (!hasManagedAccess) {
-    throw new AppError("PAYMENT_REQUIRED", "Subscribe to run site audits");
+class AmbiguousWorkflowStartError extends Error {
+  constructor(readonly cause: unknown) {
+    super("Workflow start could not be confirmed.");
+    this.name = "AmbiguousWorkflowStartError";
   }
-  return hasPaidPlan ? "paid" : "free";
 }
 
 async function startAudit(input: {
@@ -46,6 +37,7 @@ async function startAudit(input: {
   maxPages?: number;
   lighthouseStrategy?: LighthouseStrategy;
   limitTier: AuditLimitTier;
+  idempotencyKey?: string;
 }) {
   const limits = AUDIT_LIMITS[input.limitTier];
   const maxPages = clampAuditMaxPages(input.maxPages);
@@ -53,7 +45,23 @@ async function startAudit(input: {
     throw new AppError("AUDIT_PAGE_LIMIT_EXCEEDED");
   }
 
-  const lighthouseStrategy = input.lighthouseStrategy ?? "auto";
+  const isServiceIntegration =
+    Boolean(env.ACCESS_SERVICE_TOKEN_COMMON_NAME?.trim()) &&
+    input.actorUserId === env.ACCESS_SERVICE_USER_ID?.trim();
+  if (isServiceIntegration && maxPages !== BRUTAL_AUDIT_LIMITS.maxPages) {
+    throw new AppError(
+      "AUDIT_PAGE_LIMIT_EXCEEDED",
+      `Service audits must request exactly ${BRUTAL_AUDIT_LIMITS.maxPages} pages.`,
+    );
+  }
+  if (isServiceIntegration && !input.idempotencyKey) {
+    throw new AppError(
+      "VALIDATION_ERROR",
+      "Service audits require an idempotency key.",
+    );
+  }
+
+  const lighthouseStrategy = input.lighthouseStrategy ?? "none";
   const reservation = getEstimatedAuditCapacity({
     maxPages,
     lighthouseStrategy,
@@ -62,8 +70,35 @@ async function startAudit(input: {
   const auditId = crypto.randomUUID();
   const config: AuditConfig = { maxPages, lighthouseStrategy };
   const startUrl = await normalizeAndValidateStartUrl(input.startUrl);
+  const origin = new URL(startUrl).origin;
 
-  await AuditRepository.createAudit({
+  if (input.idempotencyKey) {
+    const existing = await AuditRepository.findAuditByIdempotencyKey(
+      input.projectId,
+      input.idempotencyKey,
+    );
+    if (existing) {
+      assertIdempotentAuditMatches(existing, { startUrl, config });
+      if (existing.status === "running" && !existing.workflowStartedAt) {
+        await ensureAuditWorkflow({
+          auditId: existing.id,
+          origin,
+          isServiceIntegration,
+          billingCustomer: input.billingCustomer,
+          projectId: input.projectId,
+          startUrl,
+          config,
+        });
+      }
+      return {
+        auditId: existing.id,
+        idempotent: true,
+        providerVersion: existing.providerVersion,
+      };
+    }
+  }
+
+  const inserted = await AuditRepository.createAudit({
     id: auditId,
     projectId: input.projectId,
     startedByUserId: input.actorUserId,
@@ -72,7 +107,37 @@ async function startAudit(input: {
     config,
     pagesTotal: reservation.pagesTotal,
     lighthouseTotal: reservation.lighthouseTotal,
+    origin,
+    idempotencyKey: input.idempotencyKey,
   });
+
+  if (!inserted && input.idempotencyKey) {
+    const existing = await AuditRepository.findAuditByIdempotencyKey(
+      input.projectId,
+      input.idempotencyKey,
+    );
+    if (!existing) {
+      throw new AppError("CONFLICT", "Idempotent audit start conflicted.");
+    }
+    assertIdempotentAuditMatches(existing, { startUrl, config });
+    if (existing.status === "running" && !existing.workflowStartedAt) {
+      await ensureAuditWorkflow({
+        auditId: existing.id,
+        origin,
+        isServiceIntegration,
+        billingCustomer: input.billingCustomer,
+        projectId: input.projectId,
+        startUrl,
+        config,
+      });
+    }
+    return {
+      auditId: existing.id,
+      idempotent: true,
+      providerVersion: existing.providerVersion,
+    };
+  }
+  if (!inserted) throw new AppError("CONFLICT", "Audit ID conflict.");
 
   try {
     // Concurrency and capacity are enforced after the insert, not before: a
@@ -81,30 +146,37 @@ async function startAudit(input: {
     // sees at least its own row, so at most one racer can pass; the losers
     // roll back via the catch below. Two true racers may both abort — the
     // user just retries.
-    const usage = await AuditRepository.getAuditUsageForUser(input.actorUserId);
-    if (usage.runningCount > limits.maxRunningAudits) {
-      throw new AppError("AUDIT_ALREADY_RUNNING");
-    }
-    if (usage.capacityUnits > limits.maxCapacityUnits) {
-      throw new AppError("AUDIT_CAPACITY_REACHED");
+    if (!isServiceIntegration) {
+      const usage = await AuditRepository.getAuditUsageForUser(
+        input.actorUserId,
+      );
+      if (usage.runningCount > limits.maxRunningAudits) {
+        throw new AppError("AUDIT_ALREADY_RUNNING");
+      }
+      if (usage.capacityUnits > limits.maxCapacityUnits) {
+        throw new AppError("AUDIT_CAPACITY_REACHED");
+      }
     }
 
-    await env.SITE_AUDIT_WORKFLOW.create({
-      id: auditId,
-      params: {
-        auditId,
-        billingCustomer: {
-          userId: input.billingCustomer.userId,
-          userEmail: input.billingCustomer.userEmail,
-          organizationId: input.billingCustomer.organizationId,
-          projectId: input.billingCustomer.projectId,
-        },
-        projectId: input.projectId,
-        startUrl,
-        config,
-      },
+    await ensureAuditWorkflow({
+      auditId,
+      origin,
+      isServiceIntegration,
+      billingCustomer: input.billingCustomer,
+      projectId: input.projectId,
+      startUrl,
+      config,
     });
   } catch (error) {
+    // Ambiguous Workflow create responses retain the idempotent row and lease:
+    // retrying the same request can reconcile the exact Workflow ID without
+    // risking duplicate provider work. Definitive application/capacity errors
+    // are safe to roll back because no Workflow create was attempted.
+    const ambiguousStart =
+      Boolean(input.idempotencyKey) &&
+      error instanceof AmbiguousWorkflowStartError;
+    if (ambiguousStart) throw error;
+
     try {
       const instance = await env.SITE_AUDIT_WORKFLOW.get(auditId);
       await instance.terminate();
@@ -112,11 +184,89 @@ async function startAudit(input: {
       // The workflow may never have been created, or may already be gone.
     }
 
+    await AuditRepository.releaseDispatchLease(auditId);
     await AuditRepository.deleteAuditForProject(auditId, input.projectId);
     throw error;
   }
 
-  return { auditId };
+  return {
+    auditId,
+    idempotent: false,
+    providerVersion: AUDIT_PROVIDER_VERSION,
+  };
+}
+
+function assertIdempotentAuditMatches(
+  existing: Awaited<
+    ReturnType<typeof AuditRepository.findAuditByIdempotencyKey>
+  >,
+  expected: { startUrl: string; config: AuditConfig },
+) {
+  if (!existing) throw new AppError("NOT_FOUND");
+  const existingConfig = parseAuditConfig(existing.config);
+  if (
+    existing.startUrl !== expected.startUrl ||
+    !existingConfig ||
+    existingConfig.maxPages !== expected.config.maxPages ||
+    existingConfig.lighthouseStrategy !== expected.config.lighthouseStrategy
+  ) {
+    throw new AppError(
+      "CONFLICT",
+      "Idempotency key was already used with different audit parameters.",
+    );
+  }
+}
+
+async function ensureAuditWorkflow(input: {
+  auditId: string;
+  origin: string;
+  isServiceIntegration: boolean;
+  billingCustomer: BillingCustomerContext;
+  projectId: string;
+  startUrl: string;
+  config: AuditConfig;
+}) {
+  if (input.isServiceIntegration) {
+    const lease = await AuditRepository.acquireDispatchLease(
+      input.auditId,
+      input.origin,
+    );
+    if (!lease.acquired) {
+      throw new AppError(
+        lease.reason === "origin"
+          ? "AUDIT_ALREADY_RUNNING"
+          : "AUDIT_CAPACITY_REACHED",
+      );
+    }
+  }
+
+  try {
+    await env.SITE_AUDIT_WORKFLOW.create({
+      id: input.auditId,
+      params: {
+        auditId: input.auditId,
+        billingCustomer: {
+          userId: input.billingCustomer.userId,
+          userEmail: input.billingCustomer.userEmail,
+          organizationId: input.billingCustomer.organizationId,
+          projectId: input.billingCustomer.projectId,
+        },
+        projectId: input.projectId,
+        startUrl: input.startUrl,
+        config: input.config,
+      },
+    });
+  } catch (error) {
+    // A response can be lost after Cloudflare accepted create. Confirm the
+    // deterministic instance ID before treating the call as failed.
+    try {
+      const instance = await env.SITE_AUDIT_WORKFLOW.get(input.auditId);
+      await instance.status();
+    } catch {
+      throw new AmbiguousWorkflowStartError(error);
+    }
+  }
+  await AuditRepository.markWorkflowStarted(input.auditId);
 }
 
 async function getStatus(auditId: string, projectId: string) {
@@ -156,6 +306,9 @@ async function getStatus(auditId: string, projectId: string) {
     currentPhase: audit.currentPhase,
     startedAt: audit.startedAt,
     completedAt: audit.completedAt,
+    crawlCompleted: audit.crawlCompleted,
+    providerVersion: audit.providerVersion,
+    actualCostUsd: audit.actualCostUsd,
   };
 }
 
@@ -179,6 +332,9 @@ async function getResults(auditId: string, projectId: string) {
       pagesTotal: audit.pagesTotal,
       startedAt: audit.startedAt,
       completedAt: audit.completedAt,
+      crawlCompleted: audit.crawlCompleted,
+      providerVersion: audit.providerVersion,
+      actualCostUsd: audit.actualCostUsd,
       config: parsedConfig,
     },
     pages,
@@ -256,7 +412,30 @@ async function remove(auditId: string, projectId: string) {
     }
   }
 
+  const rawKeys = await AuditRepository.getRawKeysForAudit(auditId);
+  await deleteFromR2(rawKeys);
   await AuditRepository.deleteAuditForProject(auditId, projectId);
+}
+
+async function cleanupExpiredRawAudits(now = new Date().toISOString()) {
+  const due = await AuditRepository.getAuditsDueForRawDeletion(now);
+  let deleted = 0;
+  let failed = 0;
+  for (const audit of due) {
+    try {
+      const rawKeys = await AuditRepository.getRawKeysForAudit(audit.id);
+      await deleteFromR2(rawKeys);
+      await AuditRepository.deleteAuditForProject(audit.id, audit.projectId);
+      deleted += 1;
+    } catch (error) {
+      failed += 1;
+      console.error(
+        `Failed raw audit retention cleanup for ${audit.id}:`,
+        error,
+      );
+    }
+  }
+  return { considered: due.length, deleted, failed };
 }
 
 export const AuditService = {
@@ -267,4 +446,5 @@ export const AuditService = {
   getResults,
   getHistory,
   remove,
+  cleanupExpiredRawAudits,
 } as const;

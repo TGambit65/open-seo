@@ -1,0 +1,125 @@
+{
+  "source": "Normalized MCP tools/list contract fixture for the Brutal integration",
+  "tools": [
+    {
+      "name": "run_site_audit",
+      "inputProperties": [
+        "idempotencyKey",
+        "maxPages",
+        "projectId",
+        "runLighthouse",
+        "url"
+      ],
+      "inputRequired": ["projectId", "url"],
+      "outputProperties": ["auditId", "idempotent", "meta", "providerVersion"],
+      "outputRequired": ["auditId", "idempotent", "providerVersion"],
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "get_audit_status",
+      "inputProperties": ["auditId", "projectId"],
+      "inputRequired": ["projectId"],
+      "outputProperties": ["meta", "status"],
+      "outputRequired": ["status"],
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_audit_issues",
+      "inputProperties": [
+        "auditId",
+        "cursor",
+        "issueType",
+        "limit",
+        "projectId",
+        "severity"
+      ],
+      "inputRequired": ["projectId"],
+      "outputProperties": [
+        "completeness",
+        "issues",
+        "meta",
+        "pageInfo",
+        "summary"
+      ],
+      "outputRequired": ["completeness", "issues", "pageInfo", "summary"],
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_audit_pages",
+      "inputProperties": [
+        "auditId",
+        "cursor",
+        "fetchClass",
+        "limit",
+        "projectId",
+        "statusCode",
+        "urlContains"
+      ],
+      "inputRequired": ["projectId"],
+      "outputProperties": [
+        "completeness",
+        "meta",
+        "pageInfo",
+        "pages",
+        "total"
+      ],
+      "outputRequired": ["completeness", "pageInfo", "pages", "total"],
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_audit_performance",
+      "inputProperties": ["auditId", "projectId"],
+      "inputRequired": ["projectId"],
+      "outputProperties": [
+        "actualCostUsd",
+        "completeness",
+        "desktop",
+        "meta",
+        "mobile",
+        "providerVersion",
+        "rows"
+      ],
+      "outputRequired": [
+        "actualCostUsd",
+        "completeness",
+        "desktop",
+        "mobile",
+        "providerVersion",
+        "rows"
+      ],
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "delete_site_audit",
+      "inputProperties": ["auditId", "projectId"],
+      "inputRequired": ["auditId", "projectId"],
+      "outputProperties": ["auditId", "deleted", "meta"],
+      "outputRequired": ["auditId", "deleted"],
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    }
+  ]
+}

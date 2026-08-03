@@ -4,6 +4,7 @@ import type {
 } from "@/server/lib/audit/types";
 import { sha256Hex } from "@/server/lib/audit/ids";
 import { normalizeUrl } from "@/server/lib/audit/url-utils";
+import { validatePublicAuditUrl } from "@/server/lib/audit/url-policy";
 
 const CRAWL_USER_AGENT = "OpenSEO-Audit/1.0";
 const MAX_HTML_BYTES = 2 * 1024 * 1024;
@@ -63,19 +64,24 @@ export async function crawlPage(
   const startTime = Date.now();
 
   try {
+    const signal = AbortSignal.timeout(15_000);
+    // Validate immediately before every outbound connection. The crawl queue
+    // performs a cheap synchronous screen too, but this DNS-aware gate is what
+    // rejects mixed/private answers and fails closed on resolver errors.
+    const validatedUrl = await validatePublicAuditUrl(url, signal);
     // Manual redirect handling: each hop is recorded as its own page row and
     // its target is enqueued by the frontier, so redirect chains and loops are
     // detectable from the recorded rows. Trailing-slash redirects (/docs ->
     // /docs/) need no special handling: normalizeUrl preserves trailing
     // slashes, so /docs and /docs/ are distinct URLs and the redirect resolves
     // to its canonical target instead of cycling back to its own source.
-    const response = await fetch(url, {
+    const response = await fetch(validatedUrl, {
       headers: {
         "User-Agent": CRAWL_USER_AGENT,
         Accept: "text/html,application/xhtml+xml",
       },
       redirect: "manual",
-      signal: AbortSignal.timeout(15_000),
+      signal,
     });
 
     const responseTimeMs = Date.now() - startTime;
@@ -88,7 +94,24 @@ export async function crawlPage(
 
     if (statusCode >= 300 && statusCode < 400) {
       const location = response.headers.get("location");
-      const redirectUrl = location ? normalizeUrl(location, url) : null;
+      const normalizedRedirect = location
+        ? normalizeUrl(location, validatedUrl)
+        : null;
+      // A redirect is never put onto the frontier until its DNS answers and
+      // port have passed the same public-target policy as the start URL.
+      let redirectUrl: string | null = null;
+      if (normalizedRedirect) {
+        try {
+          redirectUrl = await validatePublicAuditUrl(
+            normalizedRedirect,
+            signal,
+          );
+        } catch {
+          // Preserve the source page's 3xx evidence while refusing to enqueue a
+          // redirect target that fails the public-network policy.
+          redirectUrl = null;
+        }
+      }
       return emptyPageResult({
         url,
         statusCode,

@@ -76,6 +76,7 @@ export const {
   projectActivationState,
   backlinkSnapshots,
   audits,
+  auditDispatchLeases,
   auditPages,
   auditLinks,
   auditIssues,
