@@ -10,8 +10,8 @@ reviewed revision rather than tracking upstream automatically.
 - Reviewed upstream base: `9d19e439905a9a954ccdefe22d9270d7c389695d`
 - Integration fork: `TGambit65/open-seo`
 - Integration branch: `feat/brutal-technical-site-health`
-- Release tag: `brutal-integration-v0.1.2`
-- Reviewed integration code: `dda2ea60eb834686e172e29b0151f4afabc7cf9d`
+- Release tag: `brutal-integration-v0.1.3`
+- Reviewed integration code: `5095317dd1d7e558617a9cf02faa445b5a1b29a2`
 
 The upstream `LICENSE` file and copyright notice remain unchanged. OpenSEO is
 MIT licensed. A production promotion additionally requires a recorded review
