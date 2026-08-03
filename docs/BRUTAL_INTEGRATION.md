@@ -10,7 +10,8 @@ reviewed revision rather than tracking upstream automatically.
 - Reviewed upstream base: `9d19e439905a9a954ccdefe22d9270d7c389695d`
 - Integration fork: `TGambit65/open-seo`
 - Integration branch: `feat/brutal-technical-site-health`
-- Release tag: `brutal-integration-v0.1.0`
+- Release tag: `brutal-integration-v0.1.1`
+- Reviewed integration code: `e151f16ef6d5e8333069b7cd093e2cfa6a1876ba`
 
 The upstream `LICENSE` file and copyright notice remain unchanged. OpenSEO is
 MIT licensed. A production promotion additionally requires a recorded review
@@ -67,7 +68,15 @@ The crawler rejects credentials, non-HTTP(S) URLs, non-public ports, missing DNS
 answers, and every private or reserved A and AAAA address. It revalidates all
 addresses on every redirect and fetch. Cloudflare's
 `global_fetch_strictly_public` compatibility flag is the egress backstop against
-DNS rebinding.
+DNS rebinding. DNS lookups are bounded, IPv4-compatible IPv6 forms are rejected,
+and cross-origin redirects do not forward credentials or cookies.
+
+Audit dispatch distinguishes an ambiguous Workflow response from a confirmed
+failure: only an ambiguous idempotent start is retained for reconciliation.
+Successful Lighthouse rows are reused across Workflow retries, provider spend is
+queried once per phase, and budget exhaustion stops further Lighthouse dispatch.
+Scheduled retention and cleanup jobs fail independently, and R2 deletion is
+chunked to the platform's 1,000-key limit.
 
 Production promotion remains blocked until live tests prove that direct-origin
 bypass, localhost, private ranges, link-local ranges, IPv6-local ranges,
