@@ -26,6 +26,12 @@ import {
 import {
   getAuditIssuesTool,
   getAuditPagesTool,
+} from "@/server/mcp/tools/site-audit-collection-tools";
+import {
+  deleteSiteAuditTool,
+  getAuditPerformanceTool,
+} from "@/server/mcp/tools/site-audit-performance-tools";
+import {
   getAuditStatusTool,
   runSiteAuditTool,
 } from "@/server/mcp/tools/site-audit-tools";
@@ -251,6 +257,24 @@ export function registerOpenSeoMcpTools(server: McpServer) {
       getAuditPagesTool.name,
       getAuditPagesTool.config.outputSchema,
       getAuditPagesTool.handler,
+    ),
+  );
+  server.registerTool(
+    getAuditPerformanceTool.name,
+    getAuditPerformanceTool.config,
+    instrumentMcpToolHandler(
+      getAuditPerformanceTool.name,
+      getAuditPerformanceTool.config.outputSchema,
+      getAuditPerformanceTool.handler,
+    ),
+  );
+  server.registerTool(
+    deleteSiteAuditTool.name,
+    deleteSiteAuditTool.config,
+    instrumentMcpToolHandler(
+      deleteSiteAuditTool.name,
+      deleteSiteAuditTool.config.outputSchema,
+      deleteSiteAuditTool.handler,
     ),
   );
 }

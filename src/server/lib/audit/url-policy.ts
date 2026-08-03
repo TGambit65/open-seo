@@ -228,7 +228,7 @@ async function resolveAddressRecords(
 
   let body: DnsJsonResponse;
   try {
-    body = (await response.json()) as DnsJsonResponse;
+    body = await response.json();
   } catch {
     throw new AppError("CRAWL_TARGET_BLOCKED", "Target DNS lookup failed.");
   }

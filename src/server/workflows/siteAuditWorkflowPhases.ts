@@ -18,7 +18,9 @@ import {
 } from "@/server/workflows/siteAuditWorkflowCrawl";
 import { pgStep } from "@/server/workflows/pgStep";
 
-const LIGHTHOUSE_URL_BATCH_SIZE = 10;
+// One URL (mobile + desktop) per durable step keeps budget state visible
+// between dispatches and bounds retries/cost after a partial provider failure.
+const LIGHTHOUSE_URL_BATCH_SIZE = 1;
 
 // Workflows rejects step outputs over 1MiB; keep the sitemap seed list well
 // under that. The crawl visits at most maxPages URLs, so extra seeds are moot.
@@ -172,31 +174,21 @@ async function runLighthousePhase(
       `lighthouse-batch-${lighthouseBatchIndex}`,
       undefined,
       async () => {
-        const perUrlResults = await Promise.all(
-          batch.map(async ({ url, pageId }) => {
-            const [mobileResult, desktopResult] = await Promise.all([
-              fetchAndStoreLighthouseResult({
-                url,
-                pageId,
-                strategy: "mobile",
-                billingCustomer,
-                projectId,
-                auditId,
-              }),
-              fetchAndStoreLighthouseResult({
-                url,
-                pageId,
-                strategy: "desktop",
-                billingCustomer,
-                projectId,
-                auditId,
-              }),
-            ]);
-            return [mobileResult, desktopResult];
-          }),
-        );
-        const results = perUrlResults.flat();
-        await AuditRepository.insertLighthouseResults(auditId, results);
+        const results = [];
+        for (const { url, pageId } of batch) {
+          for (const strategy of ["mobile", "desktop"] as const) {
+            const result = await fetchAndStoreLighthouseResult({
+              url,
+              pageId,
+              strategy,
+              billingCustomer,
+              projectId,
+              auditId,
+            });
+            await AuditRepository.insertLighthouseResults(auditId, [result]);
+            results.push(result);
+          }
+        }
 
         const failed = results.filter((result) => result.errorMessage).length;
         const completed = results.length - failed;
@@ -291,6 +283,7 @@ async function finalizeAudit(args: {
     await AuditRepository.completeAudit(auditId, workflowInstanceId, {
       pagesCrawled: crawl.pages.length,
       pagesTotal: crawl.pages.length,
+      crawlCompleted: crawl.completed,
     });
     await captureServerEvent({
       distinctId: billingCustomer.userId,

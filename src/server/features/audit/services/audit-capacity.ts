@@ -45,7 +45,7 @@ export function getEstimatedAuditCapacity(input: {
   lighthouseStrategy?: LighthouseStrategy;
 }) {
   const pagesTotal = clampAuditMaxPages(input.maxPages);
-  const lighthouseStrategy = input.lighthouseStrategy ?? "auto";
+  const lighthouseStrategy = input.lighthouseStrategy ?? "none";
   // "auto" samples up to 10 pages, checked on mobile + desktop.
   const lighthouseChecks = lighthouseStrategy === "auto" ? 20 : 0;
 

@@ -3,6 +3,10 @@ import type { BillingCustomerContext } from "@/server/billing/subscription";
 import { createDataforseoClient } from "@/server/lib/dataforseo";
 import type { LighthouseResult, LighthouseStrategy } from "./types";
 import { putTextToR2 } from "@/server/lib/r2";
+import { DataforseoChargedTaskError } from "@/server/lib/dataforseo/envelope";
+import { AUDIT_PROVIDER_VERSION } from "@/shared/audit-provider";
+import { BRUTAL_AUDIT_LIMITS } from "@/shared/audit-provider";
+import { AuditRepository } from "@/server/features/audit/repositories/AuditRepository";
 
 interface LighthouseSamplePage {
   url: string;
@@ -27,12 +31,50 @@ async function fetchLighthouseResult(
   pageId: string,
   strategy: "mobile" | "desktop",
   billingCustomer: BillingCustomerContext,
+  auditId: string,
 ): Promise<LighthouseFetchResult> {
   let lastError: Error | null = null;
+  let chargedFailureCostUsd = 0;
   const dataforseo = createDataforseoClient(billingCustomer);
 
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
+      const spend = await AuditRepository.getProviderSpend(auditId);
+      if (
+        spend.auditUsd +
+          chargedFailureCostUsd +
+          BRUTAL_AUDIT_LIMITS.reservedCostUsdPerLighthouseRequest >
+          BRUTAL_AUDIT_LIMITS.maxCostUsdPerAudit ||
+        spend.dayUsd +
+          chargedFailureCostUsd +
+          BRUTAL_AUDIT_LIMITS.reservedCostUsdPerLighthouseRequest >
+          BRUTAL_AUDIT_LIMITS.maxCostUsdPerDay ||
+        spend.monthUsd +
+          chargedFailureCostUsd +
+          BRUTAL_AUDIT_LIMITS.reservedCostUsdPerLighthouseRequest >
+          BRUTAL_AUDIT_LIMITS.maxCostUsdPerMonth
+      ) {
+        return {
+          result: {
+            url,
+            pageId,
+            strategy,
+            performanceScore: null,
+            accessibilityScore: null,
+            bestPracticesScore: null,
+            seoScore: null,
+            lcpMs: null,
+            cls: null,
+            inpMs: null,
+            ttfbMs: null,
+            errorMessage: "Provider budget exhausted",
+            providerVersion: AUDIT_PROVIDER_VERSION,
+            lighthouseVersion: null,
+            actualCostUsd: chargedFailureCostUsd,
+          },
+          payloadJson: null,
+        };
+      }
       if (attempt > 0) {
         // Exponential backoff: 2s, 4s
         await new Promise((resolve) =>
@@ -55,10 +97,16 @@ async function fetchLighthouseResult(
           cls: data.metrics.cumulativeLayoutShift.numericValue,
           inpMs: data.metrics.interactionToNextPaint.numericValue,
           ttfbMs: data.metrics.serverResponseTime.numericValue,
+          providerVersion: AUDIT_PROVIDER_VERSION,
+          lighthouseVersion: data.metadata.lighthouseVersion,
+          actualCostUsd: chargedFailureCostUsd + (data.metadata.cost ?? 0),
         },
         payloadJson: JSON.stringify(data),
       };
     } catch (error) {
+      if (error instanceof DataforseoChargedTaskError) {
+        chargedFailureCostUsd += error.billing.costUsd;
+      }
       lastError = error instanceof Error ? error : new Error(String(error));
       console.warn(
         `Lighthouse attempt ${attempt + 1} failed for ${url}:`,
@@ -86,6 +134,9 @@ async function fetchLighthouseResult(
       inpMs: null,
       ttfbMs: null,
       errorMessage: lastError?.message ?? "Lighthouse request failed",
+      providerVersion: AUDIT_PROVIDER_VERSION,
+      lighthouseVersion: null,
+      actualCostUsd: chargedFailureCostUsd,
     },
     payloadJson: null,
   };
@@ -104,6 +155,7 @@ export async function fetchAndStoreLighthouseResult(input: {
     input.pageId,
     input.strategy,
     input.billingCustomer,
+    input.auditId,
   );
 
   if (!fetched.payloadJson) {

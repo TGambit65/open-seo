@@ -24,3 +24,8 @@ export async function putTextToR2(
     sizeBytes: Buffer.byteLength(body),
   };
 }
+
+export async function deleteFromR2(keys: string[]): Promise<void> {
+  if (keys.length === 0) return;
+  await env.R2.delete(keys);
+}

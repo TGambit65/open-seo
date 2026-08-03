@@ -6,8 +6,10 @@ import {
   pgTable,
   real,
   text,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { projects } from "./app.schema";
+import { AUDIT_PROVIDER_VERSION } from "@/shared/audit-provider";
 
 // Timestamps are stored as *text* (same column shape as the SQLite schema); see
 // the note in pg/app.schema.ts. `isoNow` matches `new Date().toISOString()` so
@@ -29,12 +31,18 @@ export const audits = pgTable(
       .references(() => projects.id, { onDelete: "cascade" }),
     startedByUserId: text("started_by_user_id").notNull(),
     startUrl: text("start_url").notNull(),
+    origin: text("origin"),
+    idempotencyKey: text("idempotency_key"),
+    providerVersion: text("provider_version")
+      .notNull()
+      .default(AUDIT_PROVIDER_VERSION),
     status: text("status", {
       enum: ["running", "completed", "failed"],
     })
       .notNull()
       .default("running"),
     workflowInstanceId: text("workflow_instance_id"),
+    workflowStartedAt: timestampColumn("workflow_started_at"),
     // JSON config: { maxPages, lighthouseStrategy }
     config: text("config").notNull().default("{}"),
     // Progress & summary
@@ -44,13 +52,37 @@ export const audits = pgTable(
     lighthouseCompleted: integer("lighthouse_completed").notNull().default(0),
     lighthouseFailed: integer("lighthouse_failed").notNull().default(0),
     currentPhase: text("current_phase").default("discovery"),
+    crawlCompleted: boolean("crawl_completed").notNull().default(false),
+    actualCostUsd: real("actual_cost_usd").notNull().default(0),
     startedAt: timestampColumn("started_at").notNull().default(isoNow),
     completedAt: timestampColumn("completed_at"),
+    rawDeleteAfter: timestampColumn("raw_delete_after"),
+    rawDeletedAt: timestampColumn("raw_deleted_at"),
   },
   (table) => [
     index("audits_project_id_idx").on(table.projectId),
     index("audits_started_by_user_id_idx").on(table.startedByUserId),
+    index("audits_origin_status_idx").on(table.origin, table.status),
+    index("audits_raw_delete_after_idx").on(table.rawDeleteAfter),
+    uniqueIndex("audits_project_idempotency_uidx").on(
+      table.projectId,
+      table.idempotencyKey,
+    ),
   ],
+);
+
+export const auditDispatchLeases = pgTable(
+  "audit_dispatch_leases",
+  {
+    slot: integer("slot").primaryKey(),
+    auditId: text("audit_id")
+      .notNull()
+      .unique()
+      .references(() => audits.id, { onDelete: "cascade" }),
+    origin: text("origin").notNull().unique(),
+    acquiredAt: timestampColumn("acquired_at").notNull().default(isoNow),
+  },
+  (table) => [index("audit_dispatch_leases_origin_idx").on(table.origin)],
 );
 
 // One row per crawled page
@@ -190,6 +222,12 @@ export const auditLighthouseResults = pgTable(
     errorMessage: text("error_message"),
     r2Key: text("r2_key"),
     payloadSizeBytes: integer("payload_size_bytes"),
+    providerVersion: text("provider_version")
+      .notNull()
+      .default(AUDIT_PROVIDER_VERSION),
+    lighthouseVersion: text("lighthouse_version"),
+    actualCostUsd: real("actual_cost_usd").notNull().default(0),
+    createdAt: timestampColumn("created_at").notNull().default(isoNow),
   },
   (table) => [
     index("audit_lighthouse_results_audit_id_idx").on(table.auditId),

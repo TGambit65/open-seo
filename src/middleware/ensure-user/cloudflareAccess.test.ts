@@ -19,6 +19,16 @@ const configuredService: AccessServiceIdentityConfig = {
   organizationId: "brutal-organization",
 };
 
+function expectErrorCode(run: () => unknown, code: string) {
+  let caught: unknown;
+  try {
+    run();
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toMatchObject({ code });
+}
+
 describe("classifyAccessPrincipal", () => {
   it("maps the allowlisted service token to the fixed internal tenant", () => {
     const payload: JWTPayload = {
@@ -48,35 +58,46 @@ describe("classifyAccessPrincipal", () => {
   });
 
   it("rejects an unrecognized service common name", () => {
-    expect(() =>
-      classifyAccessPrincipal(
-        { common_name: "other-client.access", sub: "" },
-        configuredService,
-      ),
-    ).toThrowError(expect.objectContaining({ code: "UNAUTHENTICATED" }));
+    expectErrorCode(
+      () =>
+        classifyAccessPrincipal(
+          { common_name: "other-client.access", sub: "" },
+          configuredService,
+        ),
+      "UNAUTHENTICATED",
+    );
   });
 
   it("rejects incomplete service mapping configuration", () => {
-    expect(() =>
-      classifyAccessPrincipal(
-        { common_name: "brutal-client.access", sub: "" },
-        { ...configuredService, organizationId: null },
-      ),
-    ).toThrowError(expect.objectContaining({ code: "AUTH_CONFIG_MISSING" }));
+    expectErrorCode(
+      () =>
+        classifyAccessPrincipal(
+          { common_name: "brutal-client.access", sub: "" },
+          { ...configuredService, organizationId: null },
+        ),
+      "AUTH_CONFIG_MISSING",
+    );
   });
 
   it("rejects hybrid or incomplete identities", () => {
-    expect(() =>
-      classifyAccessPrincipal(
-        {
-          common_name: "brutal-client.access",
-          sub: "unexpected-human-subject",
-        },
-        configuredService,
-      ),
-    ).toThrowError(expect.objectContaining({ code: "UNAUTHENTICATED" }));
-    expect(() =>
-      classifyAccessPrincipal({ sub: "", email: undefined }, configuredService),
-    ).toThrowError(expect.objectContaining({ code: "UNAUTHENTICATED" }));
+    expectErrorCode(
+      () =>
+        classifyAccessPrincipal(
+          {
+            common_name: "brutal-client.access",
+            sub: "unexpected-human-subject",
+          },
+          configuredService,
+        ),
+      "UNAUTHENTICATED",
+    );
+    expectErrorCode(
+      () =>
+        classifyAccessPrincipal(
+          { sub: "", email: undefined },
+          configuredService,
+        ),
+      "UNAUTHENTICATED",
+    );
   });
 });

@@ -103,6 +103,9 @@ export interface LighthouseResult {
   errorMessage?: string | null;
   r2Key?: string | null;
   payloadSizeBytes?: number | null;
+  providerVersion: string;
+  lighthouseVersion: string | null;
+  actualCostUsd: number;
 }
 
 /**

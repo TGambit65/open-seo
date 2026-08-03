@@ -11,6 +11,11 @@ type DnsRecords = Record<
   { A?: string[]; AAAA?: string[]; status?: number }
 >;
 
+function requestUrl(input: string | URL | Request): string {
+  if (typeof input === "string") return input;
+  return input instanceof URL ? input.toString() : input.url;
+}
+
 function dnsResponse(addresses: string[], type: "A" | "AAAA", status = 0) {
   return new Response(
     JSON.stringify({
@@ -26,7 +31,7 @@ function installDns(
   targetFetch?: (url: string) => Response,
 ) {
   vi.mocked(fetch).mockImplementation(async (input) => {
-    const url = String(input);
+    const url = requestUrl(input);
     if (!url.startsWith("https://cloudflare-dns.com/dns-query")) {
       if (!targetFetch) throw new Error(`Unexpected target fetch: ${url}`);
       return targetFetch(url);
@@ -34,7 +39,10 @@ function installDns(
 
     const parsed = new URL(url);
     const name = parsed.searchParams.get("name") ?? "";
-    const type = parsed.searchParams.get("type") as "A" | "AAAA";
+    const type = parsed.searchParams.get("type");
+    if (type !== "A" && type !== "AAAA") {
+      throw new Error(`Unexpected DNS query type: ${type ?? "missing"}`);
+    }
     const record = records[name];
     return dnsResponse(record?.[type] ?? [], type, record?.status ?? 0);
   });
@@ -156,7 +164,7 @@ describe("public audit URL policy", () => {
 
     const dnsCalls = vi
       .mocked(fetch)
-      .mock.calls.map(([input]) => String(input))
+      .mock.calls.map(([input]) => requestUrl(input))
       .filter((url) => url.startsWith("https://cloudflare-dns.com/dns-query"));
     expect(dnsCalls).toHaveLength(4);
   });

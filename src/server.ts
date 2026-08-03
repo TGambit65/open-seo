@@ -7,6 +7,7 @@ import { resolveUserContextFromHeaders } from "@/middleware/ensure-user/resolve"
 import { ProjectRepository } from "@/server/features/projects/repositories/ProjectRepository";
 import { SamSessionRepository } from "@/server/features/sam/SamSessionRepository";
 import { runScheduledRankChecks } from "@/server/features/rank-tracking/services/scheduledRankChecks";
+import { AuditService } from "@/server/features/audit/services/AuditService";
 import { getOrCreateOrganizationCustomer } from "@/server/billing/subscription";
 import { isHostedServerAuthMode } from "@/server/lib/runtime-env";
 import { getAuthMode, isHostedAuthMode } from "@/lib/auth-mode";
@@ -186,6 +187,11 @@ export default {
     _ctx: ExecutionContext,
   ) {
     // Scope a per-request Postgres client for the cron run (no-op in D1 mode).
-    await withPgClient(() => runScheduledRankChecks(env));
+    await withPgClient(async () => {
+      await Promise.all([
+        runScheduledRankChecks(env),
+        AuditService.cleanupExpiredRawAudits(),
+      ]);
+    });
   },
 };
