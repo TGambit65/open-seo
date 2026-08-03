@@ -144,8 +144,8 @@ export const getAuditStatusTool = {
     description:
       "Check the progress of a site audit (phase, pages crawled, Lighthouse progress). Free — reads OpenSEO state. Omit auditId for the most recent audit.",
     inputSchema: statusInputSchema,
-    outputSchema: z.object({
-      status: z.object({
+    outputSchema: z.strictObject({
+      status: z.strictObject({
         id: z.string(),
         startUrl: z.string(),
         status: z.enum(["running", "completed", "failed"]),

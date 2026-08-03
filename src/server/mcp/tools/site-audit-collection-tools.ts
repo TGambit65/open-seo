@@ -66,9 +66,9 @@ export const getAuditIssuesTool = {
     description:
       "Read the prioritized issue report from a completed site audit. Every issue carries a how_to_fix with concrete remediation steps an agent can act on. Free — reads OpenSEO state. Omit auditId for the most recent audit.",
     inputSchema: issuesInputSchema,
-    outputSchema: z.object({
+    outputSchema: z.strictObject({
       summary: z.array(
-        z.object({
+        z.strictObject({
           issueType: z.string(),
           title: z.string(),
           severity: z.enum(["critical", "warning", "info"]),
@@ -76,7 +76,7 @@ export const getAuditIssuesTool = {
         }),
       ),
       issues: z.array(
-        z.object({
+        z.strictObject({
           severity: z.enum(["critical", "warning", "info"]),
           issueType: z.string(),
           title: z.string(),
@@ -226,9 +226,9 @@ export const getAuditPagesTool = {
     description:
       "List crawled pages from a site audit with per-page SEO data (status, title, description, word count, indexability, crawl depth, link counts). Free — reads OpenSEO state. Omit auditId for the most recent audit.",
     inputSchema: pagesInputSchema,
-    outputSchema: z.object({
+    outputSchema: z.strictObject({
       pages: z.array(
-        z.object({
+        z.strictObject({
           id: z.string(),
           url: z.string(),
           statusCode: z.number().int().nullable(),

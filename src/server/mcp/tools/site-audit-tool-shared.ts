@@ -2,14 +2,14 @@ import { z } from "zod";
 import { AuditRepository } from "@/server/features/audit/repositories/AuditRepository";
 import { AppError } from "@/server/lib/errors";
 
-export const pageInfoOutputSchema = z.object({
+export const pageInfoOutputSchema = z.strictObject({
   returned: z.number().int().nonnegative(),
   total: z.number().int().nonnegative(),
   nextCursor: z.string().nullable(),
   hasMore: z.boolean(),
 });
 
-export const completenessOutputSchema = z.object({
+export const completenessOutputSchema = z.strictObject({
   auditComplete: z.boolean(),
   collectionComplete: z.boolean(),
   complete: z.boolean(),

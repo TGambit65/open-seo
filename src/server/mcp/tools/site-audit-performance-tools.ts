@@ -11,22 +11,22 @@ import {
   resolveAudit,
 } from "@/server/mcp/tools/site-audit-tool-shared";
 
-const metricOutputSchema = z.object({
+const metricOutputSchema = z.strictObject({
   median: z.number().nullable(),
   worst: z.number().nullable(),
 });
 
-const deviceOutputSchema = z.object({
+const deviceOutputSchema = z.strictObject({
   attempted: z.number().int().nonnegative(),
   sampleCount: z.number().int().nonnegative(),
   failures: z.number().int().nonnegative(),
-  medianScores: z.object({
+  medianScores: z.strictObject({
     performance: z.number().nullable(),
     accessibility: z.number().nullable(),
     bestPractices: z.number().nullable(),
     seo: z.number().nullable(),
   }),
-  metrics: z.object({
+  metrics: z.strictObject({
     lcpMs: metricOutputSchema,
     cls: metricOutputSchema,
     inpMs: metricOutputSchema,
@@ -101,13 +101,13 @@ export const getAuditPerformanceTool = {
     description:
       "Read mobile and desktop Lighthouse samples, median scores, median/worst Core Web Vitals, failures, provider version, and actual provider cost for an audit.",
     inputSchema: performanceInputSchema,
-    outputSchema: z.object({
+    outputSchema: z.strictObject({
       providerVersion: z.string(),
       actualCostUsd: z.number().nonnegative(),
       mobile: deviceOutputSchema,
       desktop: deviceOutputSchema,
       rows: z.array(
-        z.object({
+        z.strictObject({
           url: z.string(),
           strategy: z.enum(["mobile", "desktop"]),
           performanceScore: z.number().nullable(),
@@ -124,7 +124,7 @@ export const getAuditPerformanceTool = {
           actualCostUsd: z.number().nonnegative(),
         }),
       ),
-      completeness: z.object({
+      completeness: z.strictObject({
         auditComplete: z.boolean(),
         lighthouseComplete: z.boolean(),
         partialFailures: z.boolean(),
@@ -208,7 +208,7 @@ export const deleteSiteAuditTool = {
     description:
       "Delete an audit and its raw Lighthouse objects. Raw audits are also removed automatically after the retention window.",
     inputSchema: deleteInputSchema,
-    outputSchema: z.object({
+    outputSchema: z.strictObject({
       deleted: z.literal(true),
       auditId: z.string(),
       ...optionalMetaOutputSchema,
