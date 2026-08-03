@@ -13,7 +13,7 @@ import {
   auditPages,
 } from "@/db/schema";
 import { getDatabaseProvider } from "@/db/provider";
-import { executeInBatches } from "@/db/runBatch";
+import { executeInBatches, runBatch } from "@/db/runBatch";
 import { AUDIT_ISSUE_TYPES } from "@/shared/audit-issues";
 import { deterministicAuditRowId } from "@/server/lib/audit/ids";
 import type { DetectedIssue } from "@/server/lib/audit/issues/page-reporters";
@@ -179,36 +179,33 @@ async function insertLighthouseResults(
   );
   // Upsert: a step retry can charge a second DataForSEO call whose result
   // must not be silently dropped in favor of a failed first attempt.
-  await executeInBatches(rows, (tx, row) => {
-    const {
-      id: _id,
-      auditId: _auditId,
-      actualCostUsd,
-      createdAt: _createdAt,
-      ...dataColumns
-    } = row;
-    return tx
-      .insert(auditLighthouseResults)
-      .values(row)
-      .onConflictDoUpdate({
-        target: auditLighthouseResults.id,
-        set: {
-          ...dataColumns,
-          actualCostUsd: sql`${auditLighthouseResults.actualCostUsd} + ${actualCostUsd}`,
-        },
-      });
-  });
-
-  const stored = await db.query.auditLighthouseResults.findMany({
-    where: eq(auditLighthouseResults.auditId, auditId),
-    columns: { actualCostUsd: true },
-  });
-  await db
-    .update(audits)
-    .set({
-      actualCostUsd: stored.reduce((sum, row) => sum + row.actualCostUsd, 0),
-    })
-    .where(eq(audits.id, auditId));
+  if (rows.length === 0) return;
+  const totalDelta = rows.reduce((sum, row) => sum + row.actualCostUsd, 0);
+  await runBatch((tx) => [
+    ...rows.map((row) => {
+      const {
+        id: _id,
+        auditId: _auditId,
+        actualCostUsd,
+        createdAt: _createdAt,
+        ...dataColumns
+      } = row;
+      return tx
+        .insert(auditLighthouseResults)
+        .values(row)
+        .onConflictDoUpdate({
+          target: auditLighthouseResults.id,
+          set: {
+            ...dataColumns,
+            actualCostUsd: sql`${auditLighthouseResults.actualCostUsd} + ${actualCostUsd}`,
+          },
+        });
+    }),
+    tx
+      .update(audits)
+      .set({ actualCostUsd: sql`${audits.actualCostUsd} + ${totalDelta}` })
+      .where(eq(audits.id, auditId)),
+  ]);
 }
 
 async function getIssuesForAudit(

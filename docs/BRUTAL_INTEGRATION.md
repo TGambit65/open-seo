@@ -70,10 +70,11 @@ retention.
 
 The crawler rejects credentials, non-HTTP(S) URLs, non-public ports, missing DNS
 answers, and every private or reserved A and AAAA address. It revalidates all
-addresses on every redirect and fetch. Cloudflare's
-`global_fetch_strictly_public` compatibility flag is the egress backstop against
-DNS rebinding. DNS lookups are bounded, IPv4-compatible IPv6 forms are rejected,
-and cross-origin redirects do not forward credentials or cookies.
+addresses on every redirect and fetch. DNS lookups are bounded,
+IPv4-compatible IPv6 forms are rejected, and cross-origin redirects do not
+forward credentials or cookies. `global_fetch_strictly_public` makes same-zone
+requests use Cloudflare's public front door; it is not DNS pinning and is not
+accepted as standalone rebinding proof.
 
 Audit dispatch distinguishes an ambiguous Workflow response from a confirmed
 failure: only an ambiguous idempotent start is retained for reconciliation.

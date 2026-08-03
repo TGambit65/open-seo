@@ -319,8 +319,9 @@ function parseAuditUrl(input: string, addDefaultProtocol: boolean): URL {
 /**
  * Validate an arbitrary audit URL immediately before an outbound request.
  * Every DNS answer must be public; lookup errors and empty answers fail closed.
- * Cloudflare's `global_fetch_strictly_public` compatibility flag remains the
- * egress enforcement layer against DNS rebinding between this check and fetch.
+ * `global_fetch_strictly_public` makes same-zone requests traverse Cloudflare's
+ * public front door; it does not pin DNS. Production therefore retains an
+ * external rebinding stop-gate in addition to this per-hop validation.
  */
 export async function validatePublicAuditUrl(
   input: string,
